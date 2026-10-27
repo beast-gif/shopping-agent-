@@ -1,0 +1,114 @@
+llm:
+  provider: velona
+  base_url: ${VELONA_BASE_URL}
+  api_key: ${VELONA_API_KEY}
+  model: ${VELONA_MODEL}
+  temperature: 0
+  # function_calling | json_mode | json_schema  (switch if Velona's model rejects one)
+  structured_output_method: function_calling
+
+mcp:
+  oauth_redirect_port: 3030
+  token_dir: .tokens
+  servers:
+    zepto:
+      url: https://mcp.zepto.co.in/mcp
+      enabled: true
+    swiggy_food:
+      url: https://mcp.swiggy.com/food
+      enabled: true
+    zomato:
+      url: https://mcp-server.zomato.com/mcp
+      enabled: true
+
+  # Any tool whose name matches one of these (case-insensitive regex) is never
+  # exposed or callable, even if it is also listed in allowed_tools.
+  # This is what enforces "stop at the cart".
+  blocked_tool_patterns:
+    - checkout
+    - place_
+    - order$              # place_food_order, create_order, confirm_order ...
+    - confirm
+    - submit
+    - pay                 # payment, get_payment_options, check_payment_status
+    - delete_
+    - create_address
+    - flush_
+    - bind_user
+    - add_saved_address
+    - update_user
+    - drop_zone
+    - zepto_shop
+
+  # Allowlist: only these tools are callable. An empty list would mean
+  # "every non-blocked tool", so keep these filled in.
+  allowed_tools:
+    zepto:
+      - list_saved_addresses
+      - select_saved_address
+      - get_location_serviceability
+      - search_products
+      - search_multiple_products
+      - get_product_details
+      - get_past_order_items
+      - update_cart
+      - view_cart
+    swiggy_food:
+      - get_addresses
+      - search_restaurants
+      - get_restaurant_menu
+      - search_menu
+      - update_food_cart
+      - get_food_cart
+      - fetch_food_coupons
+      - apply_food_coupon
+    zomato:
+      - get_saved_addresses_for_user
+      - get_restaurants_for_keyword
+      - get_menu_items_listing
+      - get_restaurant_menu_by_categories
+      - create_cart
+
+# Option 1: UPI orders after you type 'confirm <total>'. These tools stay blocked for
+# normal calls; only app/ordering code can use them, through hub.call_order(), and
+# the code also enforces UPI-only and the spending cap below.
+ordering:
+  enabled: true
+  max_order_total: 1500            # rupees; any order above this is refused
+  approval_valid_seconds: 300      # a typed confirm expires after 5 minutes
+  payment_poll_seconds: 10         # how often to check whether you've paid
+  payment_timeout_seconds: 300     # unpaid after this -> order is closed as failed
+  tools:
+    zepto:
+      - get_payment_methods
+      - create_online_payment_order
+      - check_payment_status
+    swiggy_food:
+      - get_payment_options
+      - place_food_order
+      - check_payment_status
+      - confirm_order
+    zomato:
+      - checkout_cart
+      - get_order_tracking_info
+
+amazon_now:
+  profile_dir: .browser/amazon_now
+  headless: false
+
+scoring:
+  grocery:
+    w_kcal: 0.4
+    w_sugar: 0.4
+    w_protein: 0.2
+    product_match_threshold: 90      # rapidfuzz token_set_ratio, 0-100
+  food:
+    w_rating: 0.5
+    w_eta: 0.3
+    w_dish: 0.2
+    restaurant_name_threshold: 85    # 0-100
+    restaurant_max_distance_m: 200
+    menu_item_threshold: 90          # 0-100
+    restaurant_entry_threshold: 90   # name match needed to treat input as a restaurant
+
+checkpoint_db: .checkpoints/shop.sqlite

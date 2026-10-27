@@ -1,0 +1,37 @@
+# ---- secrets and logins (never commit) ----
+# Velona API key
+.env
+# OAuth tokens for Zepto / Swiggy / Zomato: anyone with these can use your accounts
+.tokens/
+# Amazon Now logged-in browser profile (Phase 3)
+.browser/
+
+# ---- local state ----
+# Zepto device id, payment QR images
+.state/
+# LangGraph SQLite checkpoints (Phase 6)
+.checkpoints/
+*.sqlite
+*.sqlite3
+
+# ---- your real data from test runs ----
+# raw app responses: contain your addresses, carts and order ids
+probes/
+tools_dump.json
+
+# ---- Python ----
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- editors / OS ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
