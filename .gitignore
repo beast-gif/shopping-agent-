@@ -18,6 +18,8 @@
 # raw app responses: contain your addresses, carts and order ids
 probes/
 tools_dump.json
+# your saved places: addresses, Wi-Fi names, coordinates
+places.yaml
 
 # ---- Python ----
 venv/

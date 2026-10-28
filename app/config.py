@@ -58,6 +58,15 @@ class FoodScoring(BaseModel):
     restaurant_entry_threshold: int = 90
 
 
+class LocationsConfig(BaseModel):
+    places_file: str = "places.yaml"
+    auto_detect: bool = True
+    match_radius_m: float = 300          # GPS fix must be this close to a place to count
+    max_gps_accuracy_m: float = 150      # fixes vaguer than this (e.g. IP-based) are ignored
+    gps_timeout_s: float = 10
+    group_threshold: float = 0.45        # address-text similarity needed to suggest 'same place'
+
+
 class OrderingConfig(BaseModel):
     """Option 1: the agent places a UPI order only after you type 'confirm <total>'.
     Which tools can ever be used, and with which arguments, is hard-coded in
@@ -80,6 +89,7 @@ class AppConfig(BaseModel):
     mcp: McpConfig
     amazon_now: AmazonNowConfig = Field(default_factory=AmazonNowConfig)
     ordering: OrderingConfig = Field(default_factory=OrderingConfig)
+    locations: LocationsConfig = Field(default_factory=LocationsConfig)
     scoring: ScoringConfig = Field(default_factory=ScoringConfig)
     checkpoint_db: str = ".checkpoints/shop.sqlite"
 

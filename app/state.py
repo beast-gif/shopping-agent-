@@ -34,6 +34,11 @@ class ShopState(TypedDict, total=False):
     router_confidence: float
     entry: Optional[Literal["dish", "restaurant"]]
 
+    # ---- location
+    place_hint: Optional[str]      # what you said ('college'), if anything
+    place_name: Optional[str]      # the place used for this request
+    place_how: Optional[str]       # how it was decided: "Wi-Fi 'Home_5G'", "you said 'college'" ...
+
     # ---- grocery workflow
     filter_spec: Optional[FilterSpec]
     candidates: Annotated[list[Product], add]          # appended by Zepto ∥ Amazon Now

@@ -92,6 +92,16 @@ ordering:
       - checkout_cart
       - get_order_tracking_info
 
+# Where you are decides which saved address (and so which store/restaurants) each app uses.
+# Run scripts/setup_places.py once to build places.yaml from your saved addresses.
+locations:
+  places_file: places.yaml
+  auto_detect: true
+  match_radius_m: 300          # a GPS fix must be within this of a place
+  max_gps_accuracy_m: 150      # ignore vaguer fixes (IP-based location is often km off)
+  gps_timeout_s: 10
+  group_threshold: 0.45        # how similar address texts must be to suggest 'same place'
+
 amazon_now:
   profile_dir: .browser/amazon_now
   headless: false

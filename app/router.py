@@ -28,6 +28,8 @@ Fields:
 - qualifier: constraint words the user gave ("guilt-free", "veg", "spicy", "low sugar"), else null.
 - budget: integer rupees only if the user stated a budget ("under 300", "budget 250"), else null.
 - restaurant_name: the restaurant name for food_restaurant, else null.
+- place: where to deliver, only if the user said it ("I'm at college" -> "college",
+  "send it home" -> "home", "to my hostel" -> "hostel"), else null. Never guess it.
 - confidence: below 0.7 when a name could be either a dish or a restaurant
   (e.g. "Paradise", "Empire").
 """
@@ -47,6 +49,7 @@ def make_router_node(cfg: AppConfig):
             "qualifier": out.qualifier,
             "budget": out.budget,
             "restaurant_query": out.restaurant_name,
+            "place_hint": out.place,
             "router_confidence": out.confidence,
             "entry": entry,
         }

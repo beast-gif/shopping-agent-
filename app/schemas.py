@@ -22,6 +22,7 @@ class RouterOutput(BaseModel):
     qualifier: Optional[str] = Field(None, description="Constraint words, e.g. 'guilt-free', 'veg', 'spicy'")
     budget: Optional[int] = Field(None, description="Budget in rupees, only if the user stated one")
     restaurant_name: Optional[str] = Field(None, description="Restaurant name if the user named one")
+    place: Optional[str] = Field(None, description="Where to deliver, only if the user said it: 'home', 'college' ...")
     confidence: float = Field(1.0, ge=0, le=1, description="How sure you are about the intent, 0-1")
 
 

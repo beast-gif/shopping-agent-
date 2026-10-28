@@ -9,3 +9,7 @@ python-dotenv>=1.0
 rapidfuzz>=3.9
 playwright>=1.47
 qrcode[pil]>=7.4
+# Windows location (only installed on Windows)
+winrt-runtime>=3.0 ; sys_platform == "win32"
+winrt-Windows.Foundation>=3.0 ; sys_platform == "win32"
+winrt-Windows.Devices.Geolocation>=3.0 ; sys_platform == "win32"
