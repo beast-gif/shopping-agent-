@@ -23,6 +23,8 @@ from app.adapters.base import (
     to_float,
 )
 from app.approval import OrderApproval
+from app.debug import save_debug
+from app.mcp_client import describe_error
 from app.schemas import (
     CartLine,
     CartResult,
@@ -165,13 +167,15 @@ class SwiggyAdapter(FoodAdapter):
     # ---- cart
 
     async def add_to_cart(self, address_id: str, restaurant_id: str,
-                          items: list[tuple[MenuItem, int]]) -> CartResult:
+                          items: list[tuple[MenuItem, int]], replace: bool = False) -> CartResult:
         needs_variant = [m.name for m, _ in items if m.has_variants]
         if needs_variant:
             raise ValueError(f"Swiggy: these need a size/variant choice first: {', '.join(needs_variant)}")
         if any(m.restaurant_id != str(restaurant_id) for m, _ in items):
             raise ValueError("Swiggy: all items must come from the same restaurant")
 
+        if replace:
+            await self.hub.call(SERVER, "flush_food_cart", {})     # clear leftovers from earlier runs
         await self.hub.call(SERVER, "update_food_cart", {
             "restaurantId": str(restaurant_id),
             "addressId": address_id,
@@ -221,6 +225,65 @@ class SwiggyAdapter(FoodAdapter):
             message=str(data.get("statusMessage") or ""),
             raw=data,
         )
+
+    # ---- coupons
+
+    async def apply_best_coupon(self, address_id: str, restaurant_id: str, cart: CartResult,
+                                max_tries: int = 4) -> tuple[CartResult, str]:
+        """Tries up to max_tries coupons Swiggy offers for this cart and keeps the one with the
+        lowest real 'to pay' (read back from get_food_cart, never estimated).
+        Returns (cart, note). Any failure just leaves the cart without a coupon."""
+        try:
+            data = await self.hub.call(SERVER, "fetch_food_coupons",
+                                       {"restaurantId": str(restaurant_id), "addressId": address_id})
+        except Exception as e:  # noqa: BLE001
+            save_debug("swiggy_coupons.json", {"error": describe_error(e)})
+            return cart, f"coupons unavailable ({type(e).__name__})"
+        save_debug("swiggy_coupons.json", data)       # raw list, to check which keys hold the codes
+
+        named: list[str] = []      # from 'couponCode' / 'coupon_code' keys
+        generic: list[str] = []    # from bare 'code' keys (could be status codes, so tried last)
+
+        def walk(o: Any) -> None:
+            if isinstance(o, dict):
+                blocked = any(o.get(k) is False for k in ("applicable", "isApplicable", "eligible", "isEligible"))
+                for key, bucket in (("couponCode", named), ("coupon_code", named), ("code", generic)):
+                    code = o.get(key)
+                    if isinstance(code, str) and code.strip() and not blocked:
+                        bucket.append(code.strip())
+                for v in o.values():
+                    walk(v)
+            elif isinstance(o, list):
+                for v in o:
+                    walk(v)
+
+        walk(data)
+        codes = list(dict.fromkeys(named or generic))
+        if not codes:
+            return cart, "no coupons for this cart"
+
+        best, best_code, last_applied = cart, None, None
+        for code in codes[:max_tries]:
+            try:
+                await self.hub.call(SERVER, "apply_food_coupon", {"couponCode": code, "addressId": address_id})
+                trial = await self.get_cart(address_id)
+                last_applied = code
+            except Exception:  # noqa: BLE001  not applicable to this cart
+                continue
+            if trial.total is not None and (best.total is None or trial.total < best.total - 0.5):
+                best, best_code = trial, code
+
+        if best_code is None:
+            current = await self.get_cart(address_id) if last_applied else cart
+            return current, f"tried {min(len(codes), max_tries)} coupons, none lowered the bill"
+        if last_applied != best_code:
+            try:
+                await self.hub.call(SERVER, "apply_food_coupon", {"couponCode": best_code, "addressId": address_id})
+                best = await self.get_cart(address_id)
+            except Exception:  # noqa: BLE001
+                return await self.get_cart(address_id), f"couldn't re-apply best coupon {best_code}"
+        saved = (cart.total - best.total) if (cart.total is not None and best.total is not None) else None
+        return best, f"coupon {best_code} applied" + (f" (saves ₹{saved:g})" if saved else "")
 
     # ---- ordering
     # Swiggy's documented UPI flow: get_payment_options -> place_food_order (PENDING_PAYMENT)

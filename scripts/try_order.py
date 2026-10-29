@@ -1,167 +1,351 @@
-"""END-TO-END TEST OF A REAL ORDER on one app (option 1: UPI after you type 'confirm <total>').
+"""Food workflow (LangGraph). Fixed steps; you choose at every ⏸:
 
-If you pay the QR, the order is real and will be delivered. If you don't pay, the script
-waits payment_timeout_seconds and then closes the order out (Swiggy marks it failed).
+  find_place ─(unknown)─> ask_place ⏸
+      │
+  search  (Swiggy ∥ Zomato, merge same restaurants, rank by R)
+      │  'paradise' matches a restaurant name -> straight to its menu
+  ask_restaurant ⏸ ── load_menu ── ask_dishes ⏸  ("3x2, 7", "/paneer", "back")
+                                        │
+                              quote  (real carts on both apps, best Swiggy coupon)
+                                        │
+                                  ask_app ⏸ ── ask_confirm ⏸ ("confirm 349")
+                                                    │
+                                              place_order  (UPI QR, wait, close out)
 
-Run from the project root:
-    python scripts/try_order.py swiggy --query biryani
-    python scripts/try_order.py zomato --query biryani --address 3
-    python scripts/try_order.py zepto  --query "guilt free ice cream" --address 0
-
-Saves every raw response to probes/order_<app>.json so the parsing can be checked.
+Every node returns {'route': <next node>} so the flow is explicit. State holds only plain
+dicts/lists (pydantic models are dumped), which LangGraph's checkpointer can store safely.
+Nodes that ask you (interrupt) do no network calls: LangGraph re-runs them on resume.
 """
 from __future__ import annotations
 
-import argparse
 import asyncio
-import json
-import sys
-from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional, TypedDict
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import interrupt
 
-from app.adapters import SwiggyAdapter, ZeptoAdapter, ZomatoAdapter  # noqa: E402
-from app.approval import ApprovalError, approve_order, confirm_phrase  # noqa: E402
-from app.config import load_config  # noqa: E402
-from app.mcp_client import McpHub, describe_error  # noqa: E402
-from app.payment import show_payment, wait_for_payment  # noqa: E402
-from app.schemas import CartResult  # noqa: E402
+from app.adapters.base import FoodAdapter
+from app.approval import ApprovalError, approve_order, confirm_phrase
+from app.config import AppConfig
+from app.location import detect_place, remember_place
+from app.mcp_client import describe_error
+from app.payment import show_payment, wait_for_payment
+from app.places import Place, load_places, match_place_name
+from app.schemas import CartResult, MenuRow, Outlet
+from app.workflows.food_logic import (
+    APP_LABEL,
+    best_quote,
+    items_for_app,
+    menu_table,
+    menu_view,
+    merge_menu,
+    merge_outlets,
+    outlets_table,
+    parse_selection,
+    quotes_table,
+    rank_outlets,
+    restaurant_name_matches,
+    rs,
+)
 
-SERVERS = {"zepto": "zepto", "swiggy": "swiggy_food", "zomato": "zomato"}
-LOG: dict[str, Any] = {}
-
-
-def rs(v: Optional[float]) -> str:
-    return "-" if v is None else f"₹{v:g}"
-
-
-def pick(prompt: str, count: int) -> Optional[int]:
-    raw = input(f"{prompt} [0-{count - 1}, Enter to stop]: ").strip()
-    if not raw.isdigit() or int(raw) >= count:
-        return None
-    return int(raw)
-
-
-def show_bill(cart: CartResult) -> None:
-    print("\n  Bill")
-    for ln in cart.lines:
-        print(f"    {ln.quantity} x {ln.name[:50]:50} {rs(ln.price)}")
-    print(f"    items: {rs(cart.item_total)}")
-    for name, amount in cart.charges.items():
-        print(f"    {name}: {rs(amount)}")
-    print(f"    TO PAY: {rs(cart.total)}")
+SERVER_OF = {"swiggy": "swiggy_food", "zomato": "zomato"}
+APP_ORDER = ["swiggy", "zomato"]
+CANCEL = {"cancel", "q", "quit", "exit", "stop"}
 
 
-async def build_cart(app: str, hub: McpHub, a: argparse.Namespace):
-    """Returns (adapter, address_id, cart) with the item you picked in the cart."""
-    if app == "zepto":
-        z = ZeptoAdapter(hub)
-        addresses = await z.list_addresses()
-        address = addresses[min(a.address, len(addresses) - 1)]
-        print(f"  Delivering to: {address.text}")
-        await z.set_address(address.address_id)
-        products = [p for p in await z.search(a.query) if p.in_stock][:8]
-        for i, p in enumerate(products):
-            print(f"   [{i}] {p.name[:55]:55} {rs(p.price)}")
-        i = pick("  Which one?", len(products)) if products else None
-        if i is None:
-            return z, address.address_id, None
-        await z.add_to_cart(products[i], a.qty, replace=True)     # drop leftovers from earlier tests
-        cart = await z.preview_order()
-        LOG["preview_raw"] = cart.raw
-        return z, address.address_id, cart
-
-    adapter = SwiggyAdapter(hub) if app == "swiggy" else ZomatoAdapter(hub)
-    addresses = await adapter.list_addresses()
-    address = addresses[min(a.address, len(addresses) - 1)]
-    print(f"  Delivering to: {address.text}")
-    found = await adapter.search(address.address_id, a.query)
-    dishes = [d for d in found.dishes if d.in_stock and not d.has_variants][:8]
-    for i, d in enumerate(dishes):
-        print(f"   [{i}] {d.name[:45]:45} {rs(d.unit_price):>7}  @ {d.restaurant_name}")
-    i = pick("  Which one?", len(dishes)) if dishes else None
-    if i is None:
-        return adapter, address.address_id, None
-    dish = dishes[i]
-    cart = await adapter.add_to_cart(address.address_id, dish.restaurant_id, [(dish, a.qty)])
-    LOG["cart_raw"] = cart.raw
-    return adapter, address.address_id, cart
+class FoodState(TypedDict, total=False):
+    request: str                    # 'biryani' or 'paradise'
+    entry: str                      # 'auto' | 'dish' | 'restaurant'
+    place_hint: Optional[str]       # 'college' if you said it
+    place: Optional[dict]           # {'name', 'how', 'addresses': {app: address_id}}
+    apps: list[str]                 # apps with a saved address at this place
+    outlets: list[dict]             # ranked Outlet dumps
+    outlet: Optional[dict]          # the one you picked
+    menu: Optional[list[dict]]      # merged MenuRow dumps
+    menu_filter: Optional[str]
+    selection: Optional[list[dict]] # [{'row_id': '3', 'qty': 2}]
+    quotes: Optional[list[dict]]    # [{'app', 'cart', 'missing', 'note'}]
+    chosen: Optional[int]           # index into quotes
+    typed_confirm: Optional[str]
+    payment: Optional[dict]
+    error: Optional[str]            # shown above the next question, then cleared
+    done: Optional[str]             # final message
+    route: str
 
 
-async def main(a: argparse.Namespace) -> None:
-    cfg = load_config()
-    app = a.app
-    server = SERVERS[app]
-    print("=" * 70)
-    print(f"REAL ORDER TEST on {app.title()}. Paying the QR places a real, delivered order.")
-    print(f"Cap: ₹{cfg.ordering.max_order_total:g}.  Unpaid orders are closed after "
-          f"{cfg.ordering.payment_timeout_seconds} s.")
-    print("=" * 70)
+def build_food_graph(cfg: AppConfig, adapters: dict[str, FoodAdapter],
+                     log: Callable[[str], None] = print) -> StateGraph:
+    fs = cfg.scoring.food
 
-    async with McpHub(cfg) as hub:
-        errors = await hub.connect_all([server])
-        if errors:
-            print(f"Could not connect: {errors[server]}")
-            return
+    def finish(msg: str) -> dict:
+        return {"done": msg, "route": END}
+
+    def with_error(state: FoodState, text: str) -> str:
+        return (f"⚠ {state['error']}\n" if state.get("error") else "") + text
+
+    def label(app: str) -> str:
+        return APP_LABEL.get(app, app)
+
+    # ------------------------------------------------------------ place
+
+    def set_place(place: Place, how: str) -> dict:
+        apps = [a for a in APP_ORDER if a in adapters and place.address_for(a)]
+        remember_place(place)
+        log(f"Delivering to {place.name} ({how}).")
+        for a in APP_ORDER:
+            if a in adapters and a not in apps:
+                log(f"  {label(a)} has no saved address at {place.name}, so it's left out.")
+        if not apps:
+            return finish(f"Neither app has a saved address at {place.name}.")
+        return {"place": {"name": place.name, "how": how, "addresses": dict(place.addresses)},
+                "apps": apps, "error": None, "route": "search"}
+
+    async def find_place(state: FoodState) -> dict:
+        book = load_places(cfg)
+        if not book.places:
+            return finish("No places set up yet. Run: python scripts/setup_places.py")
+        found = await detect_place(book, cfg, state.get("place_hint"))
+        if found.place is None:
+            log(f"Couldn't work out where you are: {found.how}")
+            return {"place": None, "route": "ask_place"}
+        return set_place(found.place, found.how)
+
+    def ask_place(state: FoodState) -> dict:
+        book = load_places(cfg)
+        names = ", ".join(p.name for p in book.places)
+        answer = str(interrupt({"prompt": with_error(state, f"Where should it be delivered? ({names}, or cancel)")})).strip()
+        if answer.lower() in CANCEL:
+            return finish("Cancelled.")
+        place = match_place_name(book, answer)
+        if not place:
+            return {"error": f"No place called '{answer}'.", "route": "ask_place"}
+        return set_place(place, f"you said '{answer}'")
+
+    # ------------------------------------------------------------ restaurants
+
+    async def search(state: FoodState) -> dict:
+        request, apps = state["request"], state["apps"]
+        addresses = state["place"]["addresses"]
+        log(f"Searching {' and '.join(label(a) for a in apps)} for '{request}'...")
+        results = await asyncio.gather(*(adapters[a].search(addresses[a], request) for a in apps),
+                                       return_exceptions=True)
+        listings, dish_restaurants = {}, set()
+        for app, res in zip(apps, results):
+            if isinstance(res, BaseException):
+                log(f"  {label(app)} search failed: {describe_error(res)}")
+                continue
+            listings[app] = res.restaurants
+            dish_restaurants.update(f"{app}:{d.restaurant_id}" for d in res.dishes)
+            log(f"  {label(app)}: {len(res.restaurants)} restaurants, {len(res.dishes)} matching dishes")
+
+        outlets = merge_outlets(listings, fs.restaurant_name_threshold, fs.same_restaurant_max_km_diff)
+        if not outlets:
+            return finish(f"No restaurants found for '{request}' near {state['place']['name']}.")
+        both = sum(1 for o in outlets if len(o.listings) > 1)
+        log(f"  {len(outlets)} restaurants after merging ({both} are on both apps).")
+
+        weights = dict(w_rating=fs.w_rating, w_eta=fs.w_eta, w_dish=fs.w_dish)
+        entry = state.get("entry") or "auto"
+        if entry in ("auto", "restaurant"):
+            named = restaurant_name_matches(request, outlets)
+            if named:
+                ranked = rank_outlets(named, dish_restaurants, **weights)
+                if not ranked:
+                    return finish(f"{named[0].name} is closed right now on every app.")
+                dumps = [o.model_dump(mode="json") for o in ranked]
+                if len(dumps) == 1:
+                    log(f"Found the restaurant: {ranked[0].name}.")
+                    return {"outlets": dumps, "outlet": dumps[0], "entry": "restaurant", "route": "load_menu"}
+                return {"outlets": dumps, "outlet": None, "entry": "restaurant", "route": "ask_restaurant"}
+            if entry == "restaurant":
+                log(f"No restaurant named '{request}' nearby; showing places that serve it instead.")
+
+        ranked = rank_outlets(outlets, dish_restaurants, **weights)[:fs.top_restaurants]
+        if not ranked:
+            return finish(f"Every restaurant for '{request}' is closed right now.")
+        return {"outlets": [o.model_dump(mode="json") for o in ranked], "outlet": None,
+                "entry": "dish", "route": "ask_restaurant"}
+
+    def ask_restaurant(state: FoodState) -> dict:
+        outlets = [Outlet.model_validate(d) for d in state["outlets"]]
+        prompt = with_error(state, "Restaurants (R = 0.5·rating/5 + 0.3·speed + 0.2·has the dish):\n"
+                            + outlets_table(outlets) + "\nPick a restaurant number, or cancel:")
+        answer = str(interrupt({"prompt": prompt})).strip().lower()
+        if answer in CANCEL:
+            return finish("Cancelled.")
+        if answer.isdigit() and 1 <= int(answer) <= len(outlets):
+            return {"outlet": state["outlets"][int(answer) - 1], "menu": None, "menu_filter": None,
+                    "selection": None, "error": None, "route": "load_menu"}
+        return {"error": f"'{answer}' isn't a number from 1 to {len(outlets)}.", "route": "ask_restaurant"}
+
+    # ------------------------------------------------------------ menu + dishes
+
+    async def load_menu(state: FoodState) -> dict:
+        outlet = Outlet.model_validate(state["outlet"])
+        addresses = state["place"]["addresses"]
+        apps = [a for a in APP_ORDER if a in outlet.listings and a in state["apps"]]
+        log(f"Loading {outlet.name}'s menu from {' and '.join(label(a) for a in apps)}...")
+        results = await asyncio.gather(
+            *(adapters[a].get_menu(addresses[a], outlet.listings[a].restaurant_id) for a in apps),
+            return_exceptions=True)
+        menus = {}
+        for app, res in zip(apps, results):
+            if isinstance(res, BaseException):
+                log(f"  {label(app)} menu failed: {describe_error(res)}")
+            else:
+                menus[app] = res
+        rows = merge_menu(menus, fs.menu_item_threshold)
+        if not rows:
+            return {"outlet": None, "error": f"{outlet.name}'s menu came back empty; pick another.",
+                    "route": "ask_restaurant"}
+        on_both = sum(1 for r in rows if len(r.items) > 1)
+        log(f"  {len(rows)} dishes ({', '.join(f'{label(a)} {len(m)}' for a, m in menus.items())}; "
+            f"{on_both} on both).")
+        return {"menu": [r.model_dump(mode="json") for r in rows], "menu_filter": None,
+                "error": None, "route": "ask_dishes"}
+
+    def ask_dishes(state: FoodState) -> dict:
+        rows = [MenuRow.model_validate(d) for d in state["menu"]]
+        outlet = Outlet.model_validate(state["outlet"])
+        apps = [a for a in APP_ORDER if a in outlet.listings and a in state["apps"]]
+        filt = state.get("menu_filter")
+        view = menu_view(rows, state["request"] if state.get("entry") == "dish" else "", filt, fs.menu_show)
+        head = (f"{outlet.name}: showing {len(view)} of {len(rows)} dishes"
+                + (f" matching '{filt}'" if filt else "") + "\n")
+        prompt = with_error(state, head + menu_table(view, apps)
+                            + "\nOrder like  3x2, 7   (dish 3 × 2, dish 7 × 1)"
+                            + "\n/word = search the menu   / = clear search   back = other restaurants   cancel")
+        answer = str(interrupt({"prompt": prompt})).strip()
+        low = answer.lower()
+        if low in CANCEL:
+            return finish("Cancelled.")
+        if low == "back":
+            return {"outlet": None, "menu": None, "selection": None, "error": None, "route": "ask_restaurant"}
+        if answer.startswith("/"):
+            return {"menu_filter": answer[1:].strip() or None, "error": None, "route": "ask_dishes"}
         try:
-            adapter, address_id, cart = await build_cart(app, hub, a)
-            if cart is None:
-                print("Stopped before adding anything.")
-                return
-            show_bill(cart)
-            total = cart.total if cart.total is not None else cart.item_total
-            if cart.total is None:
-                print("  (the app didn't return a final total; approving the item total, and the order "
-                      "is refused later if the app asks for more)")
-            if not total:
-                print("No amount to approve; stopping.")
-                return
+            picked = parse_selection(answer, rows, fs.max_quantity)
+        except ValueError as e:
+            return {"error": str(e), "route": "ask_dishes"}
+        return {"selection": [{"row_id": r.row_id, "qty": q} for r, q in picked], "error": None, "route": "quote"}
 
-            typed = input(f"\n  Type '{confirm_phrase(total)}' to place a UPI order, anything else to stop: ")
+    # ------------------------------------------------------------ carts
+
+    async def quote(state: FoodState) -> dict:
+        rows = {d["row_id"]: MenuRow.model_validate(d) for d in state["menu"]}
+        selection = [(rows[s["row_id"]], s["qty"]) for s in state["selection"]]
+        outlet = Outlet.model_validate(state["outlet"])
+        addresses = state["place"]["addresses"]
+        apps = [a for a in APP_ORDER if a in outlet.listings and a in state["apps"]]
+        log("Building your cart on " + " and ".join(label(a) for a in apps) + " to get the real bills...")
+
+        async def one(app: str) -> dict[str, Any]:
+            items, missing = items_for_app(selection, app)
+            if not items:
+                return {"app": app, "cart": None, "missing": missing, "note": "none of your dishes are here"}
+            adapter = adapters[app]
+            rid = outlet.listings[app].restaurant_id
             try:
-                approval = approve_order(cfg, server, total, typed)
-            except ApprovalError as e:
-                print(f"  Not placed: {e}")
-                return
+                cart = await adapter.add_to_cart(addresses[app], rid, items, replace=True)
+                note = ""
+                if hasattr(adapter, "apply_best_coupon") and cart.total is not None:
+                    cart, note = await adapter.apply_best_coupon(addresses[app], rid, cart)
+            except Exception as e:  # noqa: BLE001
+                return {"app": app, "cart": None, "missing": missing, "note": f"couldn't build cart: {describe_error(e)}"}
+            return {"app": app, "cart": cart.model_dump(mode="json"), "missing": missing, "note": note}
 
-            if app == "zepto":
-                payment = await adapter.place_order(approval)
-            else:
-                payment = await adapter.place_order(address_id, cart, approval)
-            LOG["payment"] = payment.model_dump(mode="json")
-            LOG["payment_raw"] = payment.raw
+        quotes = list(await asyncio.gather(*(one(a) for a in apps)))
+        return {"quotes": quotes, "chosen": None, "error": None, "route": "ask_app"}
 
-            if not show_payment(payment):
-                await adapter.finalize(payment, "PENDING")      # close it out unpaid right away
-                state, timed_out = "PENDING", True
-            else:
-                print(f"\n  Waiting for payment (checking every {cfg.ordering.payment_poll_seconds} s)...")
-                state, timed_out = await wait_for_payment(adapter, payment, cfg)
+    def ask_app(state: FoodState) -> dict:
+        quotes = state["quotes"]
+        best = best_quote(quotes)
+        tip = ""
+        if best is not None:
+            q = quotes[best]
+            tip = f"\nCheapest{' complete' if not q.get('missing') else ''}: {best + 1}. {label(q['app'])} " \
+                  f"at {rs(q['cart']['total'])}"
+        prompt = with_error(state, "Your order, real bills from each app:\n" + quotes_table(quotes) + tip
+                            + "\nPick an app (number or name), back = change dishes, cancel:")
+        answer = str(interrupt({"prompt": prompt})).strip().lower()
+        if answer in CANCEL:
+            return finish("Cancelled. Nothing was ordered.")
+        if answer == "back":
+            return {"selection": None, "quotes": None, "error": None, "route": "ask_dishes"}
+        index = None
+        if answer.isdigit() and 1 <= int(answer) <= len(quotes):
+            index = int(answer) - 1
+        else:
+            index = next((i for i, q in enumerate(quotes) if label(q["app"]).lower() == answer), None)
+        if index is None:
+            return {"error": f"'{answer}' isn't one of the options.", "route": "ask_app"}
+        if not quotes[index].get("cart") or quotes[index]["cart"].get("total") is None:
+            return {"error": f"{label(quotes[index]['app'])} has no bill for this order.", "route": "ask_app"}
+        return {"chosen": index, "error": None, "route": "ask_confirm"}
 
-            LOG["final_state"] = state
-            LOG["timed_out"] = timed_out
-            if state == "PAID":
-                print(f"\nPaid. Order {payment.order_id} is placed on {app.title()}.")
-            elif timed_out:
-                print(f"\nNot paid in time (last status {state}). The order was closed out; check the app's orders.")
-            else:
-                print(f"\nPayment {state}. Nothing was charged unless your UPI app says so.")
+    # ------------------------------------------------------------ confirm + pay
+
+    def ask_confirm(state: FoodState) -> dict:
+        q = state["quotes"][state["chosen"]]
+        total = q["cart"]["total"]
+        if total > cfg.ordering.max_order_total:
+            return {"error": f"{rs(total)} is above your cap of {rs(cfg.ordering.max_order_total)} "
+                             "(config.yaml ordering.max_order_total).", "route": "ask_app"}
+        missing = f"\n(⚠ not included: {', '.join(q['missing'])})" if q.get("missing") else ""
+        prompt = with_error(state, f"{label(q['app'])}: TO PAY {rs(total)}, delivered to {state['place']['name']}."
+                            + missing + f"\nType '{confirm_phrase(total)}' to place a UPI order, back, or cancel:")
+        answer = str(interrupt({"prompt": prompt})).strip()
+        low = answer.lower()
+        if low in CANCEL:
+            return finish("Cancelled. Nothing was ordered.")
+        if low == "back":
+            return {"error": None, "route": "ask_app"}
+        try:
+            approve_order(cfg, SERVER_OF[q["app"]], total, answer)     # checked here, issued again at payment
+        except ApprovalError as e:
+            return {"error": str(e), "route": "ask_confirm"}
+        return {"typed_confirm": answer, "error": None, "route": "place_order"}
+
+    async def place_order(state: FoodState) -> dict:
+        q = state["quotes"][state["chosen"]]
+        app = q["app"]
+        adapter = adapters[app]
+        cart = CartResult.model_validate(q["cart"])
+        address = state["place"]["addresses"][app]
+        try:
+            approval = approve_order(cfg, SERVER_OF[app], cart.total, state["typed_confirm"])
+            payment = await adapter.place_order(address, cart, approval)
         except Exception as e:  # noqa: BLE001
-            print(f"\nFAILED: {describe_error(e)}")
-            LOG["error"] = describe_error(e)
-        finally:
-            out = ROOT / "probes" / f"order_{app}.json"
-            out.parent.mkdir(exist_ok=True)
-            out.write_text(json.dumps(LOG, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
-            print(f"Raw responses saved to {out}")
+            return finish(f"Order not placed: {describe_error(e)}")
 
+        if not show_payment(payment, log):
+            await adapter.finalize(payment, "PENDING")
+            return {**finish("Stopped: the app asked for more than you approved. Not paid; order closed."),
+                    "payment": payment.model_dump(mode="json")}
 
-if __name__ == "__main__":
-    p = argparse.ArgumentParser()
-    p.add_argument("app", choices=list(SERVERS))
-    p.add_argument("--query", default="biryani")
-    p.add_argument("--address", type=int, default=0, help="which saved address (0 = first)")
-    p.add_argument("--qty", type=int, default=1)
-    asyncio.run(main(p.parse_args()))
+        log(f"Waiting for your payment (checking every {cfg.ordering.payment_poll_seconds} s, "
+            f"up to {cfg.ordering.payment_timeout_seconds // 60} min)...")
+        final, timed_out = await wait_for_payment(adapter, payment, cfg, log)
+        if final == "PAID":
+            msg = f"Paid. {label(app)} order {payment.order_id} is placed."
+        elif timed_out:
+            msg = f"Not paid in time, so the {label(app)} order was closed. Nothing was charged."
+        else:
+            msg = f"Payment {final.lower()}. Nothing was charged unless your UPI app says otherwise."
+        return {**finish(msg), "payment": payment.model_dump(mode="json")}
+
+    # ------------------------------------------------------------ wiring
+
+    g = StateGraph(FoodState)
+    nodes = {
+        "find_place": find_place, "ask_place": ask_place, "search": search,
+        "ask_restaurant": ask_restaurant, "load_menu": load_menu, "ask_dishes": ask_dishes,
+        "quote": quote, "ask_app": ask_app, "ask_confirm": ask_confirm, "place_order": place_order,
+    }
+    for name, fn in nodes.items():
+        g.add_node(name, fn)
+    g.add_edge(START, "find_place")
+    targets = list(nodes) + [END]
+    for name in nodes:
+        g.add_conditional_edges(name, lambda s: s.get("route", END), targets)
+    return g

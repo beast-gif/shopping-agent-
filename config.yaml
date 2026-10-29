@@ -33,7 +33,6 @@ mcp:
     - pay                 # payment, get_payment_options, check_payment_status
     - delete_
     - create_address
-    - flush_
     - bind_user
     - add_saved_address
     - update_user
@@ -54,6 +53,7 @@ mcp:
       - update_cart
       - view_cart
     swiggy_food:
+      - flush_food_cart              # empties the agent's own Swiggy cart before a new order
       - get_addresses
       - search_restaurants
       - get_restaurant_menu
@@ -103,8 +103,13 @@ locations:
   group_threshold: 0.45        # how similar address texts must be to suggest 'same place'
 
 amazon_now:
-  profile_dir: .browser/amazon_now
+  profile_dir: .browser/amazon_brave # its own browser profile: you log in to Amazon here once
   headless: false
+  channel: brave                     # brave | chrome | chromium (Playwright's own)
+  executable_path: ""                # only if Brave isn't in its usual install folder
+  base_url: https://www.amazon.in
+  brand_id: qqfsWw9RkO               # Amazon Now's id on amazon.in
+  search_pages: 2                    # 10 results per page
 
 scoring:
   grocery:
@@ -116,9 +121,11 @@ scoring:
     w_rating: 0.5
     w_eta: 0.3
     w_dish: 0.2
-    restaurant_name_threshold: 85    # 0-100
-    restaurant_max_distance_m: 200
-    menu_item_threshold: 90          # 0-100
-    restaurant_entry_threshold: 90   # name match needed to treat input as a restaurant
+    restaurant_name_threshold: 85    # token_set_ratio, 0-100, for 'same restaurant'
+    same_restaurant_max_km_diff: 1.0 # the two apps' distances must agree within this
+    menu_item_threshold: 90          # token_sort_ratio, 0-100, for 'same dish'
+    top_restaurants: 10
+    menu_show: 30                    # dishes shown before you search with /word
+    max_quantity: 10
 
 checkpoint_db: .checkpoints/shop.sqlite

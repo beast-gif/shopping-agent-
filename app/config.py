@@ -37,8 +37,13 @@ class McpConfig(BaseModel):
 
 
 class AmazonNowConfig(BaseModel):
-    profile_dir: str = ".browser/amazon_now"
+    profile_dir: str = ".browser/amazon_now"    # its own browser profile: you log in to Amazon here once
     headless: bool = False
+    channel: str = "chrome"                     # 'brave', 'chrome', or 'chromium' (Playwright's own)
+    executable_path: str = ""                   # only if Brave isn't found in its usual install folder
+    base_url: str = "https://www.amazon.in"
+    brand_id: str = "qqfsWw9RkO"                # Amazon Now's id on amazon.in (seen in every /tez/ call)
+    search_pages: int = 2                       # 10 results per page
 
 
 class GroceryScoring(BaseModel):
@@ -52,10 +57,12 @@ class FoodScoring(BaseModel):
     w_rating: float = 0.5
     w_eta: float = 0.3
     w_dish: float = 0.2
-    restaurant_name_threshold: int = 85
-    restaurant_max_distance_m: float = 200
-    menu_item_threshold: int = 90
-    restaurant_entry_threshold: int = 90
+    restaurant_name_threshold: int = 85        # token_set_ratio for 'same restaurant'
+    same_restaurant_max_km_diff: float = 1.0   # the two apps' distances must agree within this
+    menu_item_threshold: int = 90              # token_sort_ratio for 'same dish'
+    top_restaurants: int = 10
+    menu_show: int = 30                        # dishes shown before you search with /word
+    max_quantity: int = 10
 
 
 class LocationsConfig(BaseModel):

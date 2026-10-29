@@ -218,9 +218,13 @@ class ZomatoAdapter(FoodAdapter):
         charges: dict[str, float] = {}
         breakdown = cart.get("charge_breakdown") or {}
         for c in breakdown.get("base_charges") or []:
-            amount = (to_float(c.get("amount")) or 0.0) - (to_float(c.get("discount")) or 0.0)
             key = str(c.get("charge_type") or "charge").lower()
-            charges[key] = round(charges.get(key, 0.0) + amount, 2)
+            amount = to_float(c.get("amount")) or 0.0
+            discount = to_float(c.get("discount")) or 0.0
+            if amount:
+                charges[key] = round(charges.get(key, 0.0) + amount, 2)
+            if discount:                              # e.g. free delivery: shown as its own minus line
+                charges[f"{key}_discount"] = round(charges.get(f"{key}_discount", 0.0) - abs(discount), 2)
         tax_total = sum(to_float(t.get("tax_amount")) or 0.0 for t in breakdown.get("taxes") or [])
         if tax_total:
             charges["taxes"] = round(tax_total, 2)
@@ -242,7 +246,8 @@ class ZomatoAdapter(FoodAdapter):
         )
 
     async def add_to_cart(self, address_id: str, restaurant_id: str,
-                          items: list[tuple[MenuItem, int]]) -> CartResult:
+                          items: list[tuple[MenuItem, int]], replace: bool = False) -> CartResult:
+        """create_cart always makes a fresh cart, so `replace` needs no extra step here."""
         needs_variant = [m.name for m, _ in items if m.has_variants]
         if needs_variant:
             raise ValueError(f"Zomato: these need a size/variant choice first: {', '.join(needs_variant)}")

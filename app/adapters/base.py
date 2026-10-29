@@ -83,8 +83,9 @@ class FoodAdapter(ABC):
 
     @abstractmethod
     async def add_to_cart(self, address_id: str, restaurant_id: str,
-                          items: list[tuple[MenuItem, int]]) -> CartResult:
-        """All items must be from one restaurant. Returns the cart as the app reports it."""
+                          items: list[tuple[MenuItem, int]], replace: bool = False) -> CartResult:
+        """All items must be from one restaurant. replace=True empties the agent's cart first.
+        Returns the cart as the app reports it."""
 
     @abstractmethod
     async def get_cart(self, address_id: str) -> CartResult: ...

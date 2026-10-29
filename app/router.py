@@ -1,7 +1,7 @@
 """Intent router: one structured LLM call, no loop.
 
 food_restaurant vs food_dish is only a first guess here. The food workflow
-verifies a restaurant guess by searching (name match >= restaurant_entry_threshold)
+verifies a restaurant guess by searching (every typed word must be in the restaurant's name)
 and falls back to the dish flow if nothing matches.
 """
 from __future__ import annotations
