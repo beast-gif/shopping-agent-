@@ -133,6 +133,8 @@ def build_grocery_graph(cfg: AppConfig, adapters: dict[str, GroceryAdapter],
         book = load_places(cfg)
         if not book.places:
             return finish("No places set up yet. Run: python scripts/setup_places.py")
+        if cfg.locations.always_ask and not state.get("place_hint"):
+            return {"place": None, "route": "ask_place"}
         found = await detect_place(book, cfg, state.get("place_hint"))
         if found.place is None:
             log(f"Couldn't work out where you are: {found.how}")
@@ -142,7 +144,8 @@ def build_grocery_graph(cfg: AppConfig, adapters: dict[str, GroceryAdapter],
     def ask_place(state: GroceryState) -> dict:
         book = load_places(cfg)
         names = ", ".join(p.name for p in book.places)
-        answer = str(interrupt({"prompt": with_error(state, f"Where should it be delivered? ({names}, or cancel)")})).strip()
+        answer = str(interrupt({"prompt": with_error(state, f"Where should it be delivered? ({names}, or cancel)"),
+                                "options": [p.name for p in book.places] + ["cancel"]})).strip()
         if answer.lower() in CANCEL:
             return finish("Cancelled.")
         place = match_place_name(book, answer)
@@ -183,7 +186,8 @@ def build_grocery_graph(cfg: AppConfig, adapters: dict[str, GroceryAdapter],
         prompt = with_error(state, head + "\nAdd more: type an item (chocolates, or several: chips, curd)"
                             + "\nbill = put the basket in the carts and show real bills"
                             + "\nremove 2 = drop line 2   cancel = stop")
-        answer = str(interrupt({"prompt": prompt})).strip()
+        options = (["bill"] if basket else []) + ["cancel"]
+        answer = str(interrupt({"prompt": prompt, "options": options})).strip()
         low = answer.lower()
         if low in CANCEL:
             return finish("Cancelled. Nothing was added to any cart.")
@@ -233,7 +237,8 @@ def build_grocery_graph(cfg: AppConfig, adapters: dict[str, GroceryAdapter],
                 "route": "search" if budget is not None else "ask_budget"}
 
     def ask_budget(state: GroceryState) -> dict:
-        answer = str(interrupt({"prompt": with_error(state, "Budget in ₹? (e.g. 300; Enter = no limit; cancel)")})).strip().lower()
+        answer = str(interrupt({"prompt": with_error(state, "Budget in ₹? (e.g. 300; Enter = no limit; cancel)"),
+                                "options": ["no limit", "100", "200", "300", "500", "cancel"]})).strip().lower()
         if answer in CANCEL:
             return finish("Cancelled.")
         if answer in ("", "no", "none", "any", "no limit", "0"):
@@ -386,7 +391,7 @@ def build_grocery_graph(cfg: AppConfig, adapters: dict[str, GroceryAdapter],
                             + "\nType the numbers you want, x for more than one:   6x3, 9"
                             + "\n/word = search this list (/mango)   / = top again   /* = everything"
                             + "\nskip = nothing from this list   cancel = stop")
-        answer = str(interrupt({"prompt": prompt})).strip()
+        answer = str(interrupt({"prompt": prompt, "options": ["skip", "cancel"]})).strip()
         low = answer.lower()
         if low in CANCEL:
             return finish("Cancelled. Nothing was added to any cart.")
@@ -438,7 +443,8 @@ def build_grocery_graph(cfg: AppConfig, adapters: dict[str, GroceryAdapter],
         prompt = with_error(state, "Your Amazon Now cart already has:\n" + "\n".join(lines)
                             + "\nSet those aside while comparing, so the bill shows only your basket?"
                             + "\nThey go back into your cart afterwards, whatever you choose. (Y/n, cancel)")
-        answer = str(interrupt({"prompt": prompt})).strip().lower()
+        options = [{"label": "Yes, set aside", "value": "y"}, {"label": "No, keep them in", "value": "n"}, "cancel"]
+        answer = str(interrupt({"prompt": prompt, "options": options})).strip().lower()
         if answer in CANCEL:
             return finish("Cancelled. Nothing was added to any cart.")
         return {"amazon_replace": answer not in ("n", "no"), "error": None, "route": "quote"}
@@ -505,7 +511,9 @@ def build_grocery_graph(cfg: AppConfig, adapters: dict[str, GroceryAdapter],
         prompt = with_error(state, "Real bills from each app:\n"
                             + quotes_table(quotes, state.get("budget") or None) + tip
                             + "\nPick an app (number or name), back = change the basket, cancel:")
-        answer = str(interrupt({"prompt": prompt})).strip().lower()
+        options = [{"label": f"{k}. {label(q['app'])}" + (f" ₹{q['cart']['total']:g}" if (q.get("cart") or {}).get("total") is not None else ""),
+                    "value": str(k)} for k, q in enumerate(quotes, 1)] + ["back", "cancel"]
+        answer = str(interrupt({"prompt": prompt, "options": options})).strip().lower()
         if answer in CANCEL:
             return {"after": "cancel", "route": "cleanup"}
         if answer == "back":
@@ -537,7 +545,12 @@ def build_grocery_graph(cfg: AppConfig, adapters: dict[str, GroceryAdapter],
         else:
             text = (f"{label(app)}: TO PAY ₹{total:g}, delivered to {state['place']['name']}.{missing}"
                     f"\nType '{confirm_phrase(total)}' to place a UPI order, back, or cancel:")
-        answer = str(interrupt({"prompt": with_error(state, text)})).strip()
+        # Zepto: no 'confirm' button on purpose, the exact phrase must be typed
+        options = ["open", "back", "cancel"] if app == "amazon_now" else ["back", "cancel"]
+        question = {"prompt": with_error(state, text), "options": options}
+        if app != "amazon_now":
+            question["typed"] = confirm_phrase(total)
+        answer = str(interrupt(question)).strip()
         low = answer.lower()
         if low in CANCEL:
             return {"after": "cancel", "route": "cleanup"}

@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AR7 Shopping</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --panel: #ffffff; --ink: #1d1d1b; --muted: #75736d; --line: #e4e1da;
+    --accent: #e8590c; --accent-ink: #ffffff; --user: #1d1d1b; --user-ink: #ffffff;
+    --ok: #2b8a3e; --warn: #c92a2a; --chip: #efede8; --mono-bg: #fbfaf8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141413; --panel: #1d1d1b; --ink: #ecebe6; --muted: #9b998f; --line: #33322e;
+      --accent: #ff7a33; --accent-ink: #141413; --user: #ecebe6; --user-ink: #141413;
+      --ok: #69db7c; --warn: #ff8787; --chip: #2a2926; --mono-bg: #181816;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--ink);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+         display: flex; flex-direction: column; }
+  header { display: flex; align-items: center; gap: 12px; padding: 12px 20px;
+           border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { font-size: 16px; margin: 0; letter-spacing: .2px; }
+  header h1 span { color: var(--accent); }
+  .status { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.on { background: var(--ok); }
+  .dot.busy { background: var(--accent); animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity: .3; } }
+  header .spacer { flex: 1; }
+  button { font: inherit; cursor: pointer; border-radius: 8px; border: 1px solid var(--line);
+           background: var(--panel); color: var(--ink); padding: 6px 12px; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+
+  main { flex: 1; overflow-y: auto; padding: 20px 16px 8px; }
+  .feed { max-width: 1040px; margin: 0 auto; display: flex; flex-direction: column; gap: 10px; }
+  .user { align-self: flex-end; background: var(--user); color: var(--user-ink);
+          padding: 8px 14px; border-radius: 14px 14px 4px 14px; max-width: 70%; white-space: pre-wrap; }
+  .logs { font: 12.5px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace; color: var(--muted);
+          white-space: pre-wrap; padding: 0 4px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+  .card.done { border-left: 4px solid var(--ok); white-space: pre-wrap; }
+  .card.error { border-left: 4px solid var(--warn); color: var(--warn); }
+  .card pre { margin: 0; background: var(--mono-bg); border-radius: 8px; padding: 10px 12px;
+              font: 12.5px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;
+              overflow-x: auto; white-space: pre; }
+  .options { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .typed { margin-top: 8px; font-size: 13px; color: var(--muted); }
+  .typed code { color: var(--accent); font-weight: 600; }
+  .qr { display: flex; gap: 14px; align-items: center; }
+  .qr img { width: 220px; height: 220px; image-rendering: pixelated; border-radius: 8px; background: #fff; padding: 6px; }
+
+  footer { border-top: 1px solid var(--line); background: var(--panel); padding: 12px 16px; }
+  .composer { max-width: 1040px; margin: 0 auto; display: flex; flex-direction: column; gap: 8px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chips button { background: var(--chip); border-color: transparent; font-size: 13px; padding: 4px 10px; border-radius: 999px; }
+  .row { display: flex; gap: 8px; }
+  .row input { flex: 1; font: inherit; padding: 10px 12px; border-radius: 10px;
+               border: 1px solid var(--line); background: var(--bg); color: var(--ink); outline: none; }
+  .row input:focus { border-color: var(--accent); }
+  .hint { font-size: 12.5px; color: var(--muted); min-height: 1em; }
+  @media (max-width: 640px) { .user { max-width: 90%; } header { padding: 10px 16px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>AR7 <span>Shopping</span></h1>
+  <div class="status"><div id="dot" class="dot"></div><span id="status">connecting…</span></div>
+  <div class="spacer"></div>
+  <button id="startOver" hidden title="Forget the unfinished request">Start over</button>
+</header>
+
+<main id="scroller"><div class="feed" id="feed"></div></main>
+
+<footer>
+  <div class="composer">
+    <div class="chips" id="chips">
+      <button>biryani</button><button>guilt free ice cream</button>
+      <button>ice cream, chips, curd</button><button>meghana foods</button><button>help</button>
+    </div>
+    <div class="row">
+      <input id="input" autocomplete="off" placeholder="What do you want? e.g. biryani, guilt free ice cream under 200">
+      <button id="send" class="primary">Send</button>
+    </div>
+    <div class="hint" id="hint"></div>
+  </div>
+</footer>
+
+<script>
+const feed = document.getElementById("feed"), scroller = document.getElementById("scroller");
+const input = document.getElementById("input"), sendBtn = document.getElementById("send");
+const dot = document.getElementById("dot"), statusEl = document.getElementById("status");
+const hint = document.getElementById("hint"), chips = document.getElementById("chips");
+const startOver = document.getElementById("startOver");
+let ws = null, busy = false, waiting = false, logBlock = null;
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+function stick() { scroller.scrollTop = scroller.scrollHeight; }
+function disableOldOptions() {
+  feed.querySelectorAll(".options button").forEach(b => b.disabled = true);
+}
+function setState() {
+  dot.className = "dot " + (ws && ws.readyState === 1 ? (busy ? "busy" : "on") : "");
+  statusEl.textContent = !(ws && ws.readyState === 1) ? "offline, reconnecting…" : busy ? "working…" : waiting ? "waiting for you" : "ready";
+  sendBtn.disabled = busy;
+  chips.hidden = waiting || busy;
+  startOver.hidden = !waiting || busy;
+  input.placeholder = waiting ? "Type your answer (or use the buttons)" : "What do you want? e.g. biryani, guilt free ice cream under 200";
+}
+
+function render(ev) {
+  if (ev.type !== "log") logBlock = null;
+  switch (ev.type) {
+    case "user":
+      disableOldOptions();
+      feed.append(el("div", "user", ev.text || "(Enter)"));
+      break;
+    case "log":
+      if (!logBlock) { logBlock = el("div", "logs"); feed.append(logBlock); logBlock.textContent = ev.text; }
+      else logBlock.textContent += "\n" + ev.text;
+      break;
+    case "question": {
+      const card = el("div", "card");
+      card.append(el("pre", "", ev.prompt || ""));
+      const opts = el("div", "options");
+      (ev.options || []).forEach(o => {
+        const label = typeof o === "string" ? o : o.label, value = typeof o === "string" ? o : o.value;
+        const b = el("button", "", label);
+        b.onclick = () => send(value);
+        opts.append(b);
+      });
+      if (opts.children.length) card.append(opts);
+      if (ev.typed) {
+        const t = el("div", "typed");
+        t.append("To place the order type exactly ");
+        t.append(el("code", "", ev.typed));
+        t.append(" (no button for this, on purpose)");
+        card.append(t);
+      }
+      feed.append(card);
+      waiting = true;
+      hint.textContent = ev.typed ? `Type exactly: ${ev.typed}` : "";
+      break;
+    }
+    case "image": {
+      const card = el("div", "card qr");
+      const img = el("img"); img.src = ev.url + "?t=" + Date.now(); img.alt = "UPI QR";
+      card.append(img, el("div", "", "Scan with any UPI app on your phone. The agent is watching for the payment."));
+      feed.append(card);
+      break;
+    }
+    case "done":
+      disableOldOptions();
+      feed.append(el("div", "card done", ev.text));
+      waiting = false; hint.textContent = "";
+      break;
+    case "error":
+      feed.append(el("div", "card error", ev.text));
+      break;
+    case "busy":
+      busy = !!ev.value;
+      break;
+  }
+  setState(); stick();
+}
+
+function send(text) {
+  if (!ws || ws.readyState !== 1 || busy) return;
+  ws.send(JSON.stringify({ type: "send", text }));
+  input.value = "";
+}
+
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen = setState;
+  ws.onmessage = (m) => {
+    const ev = JSON.parse(m.data);
+    if (ev.type === "hello") {
+      feed.innerHTML = ""; logBlock = null; waiting = false;
+      (ev.history || []).forEach(render);
+      busy = !!ev.busy;
+      if (ev.question && !waiting) render({ type: "question", ...ev.question });
+      waiting = !!ev.question;
+      if (ev.unfinished && !ev.history.length) {
+        feed.prepend(el("div", "card", `You didn't finish “${ev.unfinished}”. Answer below to continue, or press Start over.`));
+      }
+      setState(); stick();
+      return;
+    }
+    render(ev);
+  };
+  ws.onclose = () => { setState(); setTimeout(connect, 2000); };
+}
+
+sendBtn.onclick = () => send(input.value);
+input.addEventListener("keydown", e => { if (e.key === "Enter") send(input.value); });
+chips.querySelectorAll("button").forEach(b => b.onclick = () => send(b.textContent));
+startOver.onclick = () => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "new" })); waiting = false; setState(); };
+connect(); input.focus();
+</script>
+</body>
+</html>

@@ -13,3 +13,6 @@ qrcode[pil]>=7.4
 winrt-runtime>=3.0 ; sys_platform == "win32"
 winrt-Windows.Foundation>=3.0 ; sys_platform == "win32"
 winrt-Windows.Devices.Geolocation>=3.0 ; sys_platform == "win32"
+# Web page (scripts/web.py)
+fastapi>=0.115
+uvicorn[standard]>=0.30

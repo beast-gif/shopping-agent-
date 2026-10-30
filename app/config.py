@@ -72,6 +72,7 @@ class FoodScoring(BaseModel):
 class LocationsConfig(BaseModel):
     places_file: str = "places.yaml"
     auto_detect: bool = True
+    always_ask: bool = False             # True: ask the place every time (the web page sets this)
     match_radius_m: float = 300          # GPS fix must be this close to a place to count
     max_gps_accuracy_m: float = 150      # fixes vaguer than this (e.g. IP-based) are ignored
     gps_timeout_s: float = 10

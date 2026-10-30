@@ -107,6 +107,8 @@ def build_food_graph(cfg: AppConfig, adapters: dict[str, FoodAdapter],
         book = load_places(cfg)
         if not book.places:
             return finish("No places set up yet. Run: python scripts/setup_places.py")
+        if cfg.locations.always_ask and not state.get("place_hint"):
+            return {"place": None, "route": "ask_place"}
         found = await detect_place(book, cfg, state.get("place_hint"))
         if found.place is None:
             log(f"Couldn't work out where you are: {found.how}")
@@ -116,7 +118,8 @@ def build_food_graph(cfg: AppConfig, adapters: dict[str, FoodAdapter],
     def ask_place(state: FoodState) -> dict:
         book = load_places(cfg)
         names = ", ".join(p.name for p in book.places)
-        answer = str(interrupt({"prompt": with_error(state, f"Where should it be delivered? ({names}, or cancel)")})).strip()
+        answer = str(interrupt({"prompt": with_error(state, f"Where should it be delivered? ({names}, or cancel)"),
+                                "options": [p.name for p in book.places] + ["cancel"]})).strip()
         if answer.lower() in CANCEL:
             return finish("Cancelled.")
         place = match_place_name(book, answer)
@@ -179,7 +182,8 @@ def build_food_graph(cfg: AppConfig, adapters: dict[str, FoodAdapter],
         outlets = [Outlet.model_validate(d) for d in state["outlets"]]
         prompt = with_error(state, "Restaurants (R = 0.5·rating/5 + 0.3·speed + 0.2·has the dish):\n"
                             + outlets_table(outlets) + "\nPick a restaurant number, or cancel:")
-        answer = str(interrupt({"prompt": prompt})).strip().lower()
+        options = [{"label": f"{i}. {o.name}", "value": str(i)} for i, o in enumerate(outlets, 1)] + ["cancel"]
+        answer = str(interrupt({"prompt": prompt, "options": options})).strip().lower()
         if answer in CANCEL:
             return finish("Cancelled.")
         index = None
@@ -239,7 +243,7 @@ def build_food_graph(cfg: AppConfig, adapters: dict[str, FoodAdapter],
                             + "\n   3x2, 7   -> 2 of dish 3 and 1 of dish 7"
                             + "\nTo search the menu type / and a word, e.g. /paneer   (just / shows everything again)"
                             + "\nback = other restaurants   cancel = stop")
-        answer = str(interrupt({"prompt": prompt})).strip()
+        answer = str(interrupt({"prompt": prompt, "options": ["back", "cancel"]})).strip()
         low = answer.lower()
         if low in CANCEL:
             return finish("Cancelled.")
@@ -296,7 +300,9 @@ def build_food_graph(cfg: AppConfig, adapters: dict[str, FoodAdapter],
                   f"at {rs(q['cart']['total'])}"
         prompt = with_error(state, "Your order, real bills from each app:\n" + quotes_table(quotes) + tip
                             + "\nPick an app (number or name), back = change dishes, cancel:")
-        answer = str(interrupt({"prompt": prompt})).strip().lower()
+        options = [{"label": f"{k}. {label(q['app'])}" + (f" {rs(q['cart']['total'])}" if (q.get("cart") or {}).get("total") is not None else ""),
+                    "value": str(k)} for k, q in enumerate(quotes, 1)] + ["back", "cancel"]
+        answer = str(interrupt({"prompt": prompt, "options": options})).strip().lower()
         if answer in CANCEL:
             return finish("Cancelled. Nothing was ordered.")
         if answer == "back":
@@ -323,7 +329,8 @@ def build_food_graph(cfg: AppConfig, adapters: dict[str, FoodAdapter],
         missing = f"\n(⚠ not included: {', '.join(q['missing'])})" if q.get("missing") else ""
         prompt = with_error(state, f"{label(q['app'])}: TO PAY {rs(total)}, delivered to {state['place']['name']}."
                             + missing + f"\nType '{confirm_phrase(total)}' to place a UPI order, back, or cancel:")
-        answer = str(interrupt({"prompt": prompt})).strip()
+        # no 'confirm' button on purpose: the exact phrase must be typed
+        answer = str(interrupt({"prompt": prompt, "options": ["back", "cancel"], "typed": confirm_phrase(total)})).strip()
         low = answer.lower()
         if low in CANCEL:
             return finish("Cancelled. Nothing was ordered.")
