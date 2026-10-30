@@ -258,10 +258,11 @@ class AmazonNowAdapter(GroceryAdapter):
             raw=p,
         )
 
-    async def search(self, query: str) -> list[Product]:
+    async def search(self, query: str, pages: Optional[int] = None) -> list[Product]:
+        """pages: how many result pages to read (default amazon_now.search_pages)."""
         out: list[Product] = []
         seen: set[str] = set()
-        for page_no in range(max(1, self.amz.search_pages)):
+        for page_no in range(max(1, pages or self.amz.search_pages)):
             data = await self._call("GET", "/tez/browse/searchByKeyword", {
                 "keyword": query, "brandId": self.brand, "offset": page_no,
                 "spellCorrectionDisabled": "false", "searchSource": "search"})
@@ -370,36 +371,128 @@ class AmazonNowAdapter(GroceryAdapter):
                 await self._set_quantity(it, 0)
         return await self.get_cart()
 
-    async def add_to_cart(self, product: Product, quantity: int = 1, replace: bool = False) -> CartResult:
-        """Sets this product's quantity in your Amazon Now cart. replace=True first removes everything
-        else in the cart (it's your real cart, so the workflow asks you before using it)."""
-        if quantity < 1:
-            raise ValueError("quantity must be at least 1 (use remove_items to take it out)")
-        if replace:
-            await self.remove_items(keep_asins=[product.product_id])
+    async def _put(self, product: Product, quantity: int) -> Optional[str]:
+        """Sets one product's quantity. Returns a note for you if it couldn't do exactly that."""
         items = (await self._cart_raw()).get("cartItems") or []
         existing = next((it for it in items if it.get("asin") == product.product_id), None)
 
         if existing is None:
+            if not product.in_stock:
+                return f"{product.name}: out of stock, skipped"
             offer = product.raw.get("offerId")
             store = product.store_product_id or product.raw.get("storeId")
             if not offer or not store:
-                raise AmazonNowError(f"{product.name!r}: no offerId/storeId; search again")
+                return f"{product.name}: no offerId/storeId (search again), skipped"
             cr = (await self._call("POST", "/tez/order/atc", {"brandId": self.brand}, {
                 "setQuantityFlag": False, "asin": product.product_id, "offerId": offer, "brandId": self.brand,
                 "storeId": store, "quantity": 1, "initiatePurchase": True, "paymentEntity": None}) or {}
                   ).get("cartResponse") or {}
             existing = next((it for it in cr.get("cartItems") or [] if it.get("asin") == product.product_id), None)
+            if existing is None:             # the reply may not list the whole cart: read it again
+                items = (await self._cart_raw()).get("cartItems") or []
+                existing = next((it for it in items if it.get("asin") == product.product_id), None)
             if existing is None:
-                cart = await self.get_cart()
-                return cart.model_copy(update={"ok": False, "message": f"Amazon Now didn't add {product.name!r}"})
+                return f"{product.name}: Amazon Now didn't add it"
 
+        note = None
+        limit = existing.get("maxAllowedQuantity")
+        if limit and quantity > int(limit):
+            note = f"{product.name}: Amazon Now allows at most {limit}, so {limit} added (you asked {quantity})"
+            quantity = int(limit)
         if int(existing.get("quantity") or 0) != quantity:
-            limit = existing.get("maxAllowedQuantity")
-            if limit and quantity > int(limit):
-                raise AmazonNowError(f"Amazon Now allows at most {limit} of {product.name!r}")
             await self._set_quantity(existing, quantity)
+        return note
+
+    async def other_items_raw(self, keep_asins: list[str]) -> list[dict[str, Any]]:
+        """Like other_items, but with what's needed to put them back later (put_back)."""
+        out = []
+        for it in (await self._cart_raw()).get("cartItems") or []:
+            if it.get("asin") in keep_asins:
+                continue
+            out.append({"asin": it.get("asin"), "offerId": it.get("offerId"), "storeId": it.get("storeId"),
+                        "quantity": int(it.get("quantity") or 0),
+                        "title": clean_text(it.get("title")) or it.get("asin"),
+                        "price": money(it.get("totalOfferPrice"))})
+        return out
+
+    async def _add_one(self, asin: str, offer_id: str, store_id: str) -> Optional[dict[str, Any]]:
+        """Adds 1 of a product (like pressing Add). Returns its cart line, or None."""
+        cr = (await self._call("POST", "/tez/order/atc", {"brandId": self.brand}, {
+            "setQuantityFlag": False, "asin": asin, "offerId": offer_id, "brandId": self.brand,
+            "storeId": store_id, "quantity": 1, "initiatePurchase": True, "paymentEntity": None}) or {}
+              ).get("cartResponse") or {}
+        found = next((it for it in cr.get("cartItems") or [] if it.get("asin") == asin), None)
+        if found is None:                    # the reply may not list the whole cart: read it again
+            found = next((it for it in (await self._cart_raw()).get("cartItems") or []
+                          if it.get("asin") == asin), None)
+        return found
+
+    async def put_back(self, items: list[dict[str, Any]]) -> list[str]:
+        """Re-adds items set aside with other_items_raw (same quantities).
+        Returns the names it couldn't put back (e.g. now out of stock)."""
+        failed: list[str] = []
+        current = {it.get("asin"): it for it in (await self._cart_raw()).get("cartItems") or []}
+        for x in items:
+            try:
+                line = current.get(x["asin"])
+                if line is None and x.get("offerId") and x.get("storeId"):
+                    line = await self._add_one(x["asin"], x["offerId"], x["storeId"])
+                if line is None:
+                    failed.append(x.get("title") or x["asin"])
+                    continue
+                if int(line.get("quantity") or 0) != x["quantity"]:
+                    await self._set_quantity(line, x["quantity"])
+            except AmazonNowError:
+                failed.append(x.get("title") or x["asin"])
+        return failed
+
+    async def quantities(self, asins: list[str]) -> dict[str, int]:
+        """How many of each product your Amazon Now cart has right now (0 = not in it)."""
+        items = (await self._cart_raw()).get("cartItems") or []
+        have = {it.get("asin"): int(it.get("quantity") or 0) for it in items}
+        return {a: have.get(a, 0) for a in asins}
+
+    async def set_quantities(self, wanted: dict[str, int]) -> CartResult:
+        """Puts products back to these quantities (0 removes). Used to undo the agent's picks
+        when you choose another app or cancel: {asin: quantity before the agent touched it}."""
+        for it in (await self._cart_raw()).get("cartItems") or []:
+            asin = it.get("asin")
+            if asin in wanted and int(it.get("quantity") or 0) != wanted[asin]:
+                await self._set_quantity(it, wanted[asin])
         return await self.get_cart()
+
+    async def add_many(self, picks: list[tuple[Product, int]], replace: bool = False) -> CartResult:
+        """Puts several products in your Amazon Now cart: [(milk, 2), (curd, 1)].
+        The same product picked twice is added up. Each product is set to exactly its quantity
+        (re-running doesn't double it). replace=True first removes everything else in the cart
+        (it's your real cart, so the workflow asks you before using it).
+        One product failing (out of stock, over the limit) doesn't stop the others; the reasons
+        are in CartResult.message and ok is False."""
+        wanted: dict[str, tuple[Product, int]] = {}
+        for product, quantity in picks:
+            if quantity < 1:
+                raise ValueError(f"quantity for {product.name!r} must be at least 1")
+            prev = wanted.get(product.product_id)
+            wanted[product.product_id] = (product, quantity + (prev[1] if prev else 0))
+        if not wanted:
+            raise ValueError("pick at least one product")
+
+        if replace:
+            await self.remove_items(keep_asins=list(wanted))
+        notes = [n for product, quantity in wanted.values() if (n := await self._put(product, quantity))]
+
+        cart = await self.get_cart()
+        in_cart = {it.get("asin") for it in cart.raw.get("cartItems") or []}
+        added = sum(1 for asin in wanted if asin in in_cart)
+        summary = f"{added} of {len(wanted)} products in the cart"
+        return cart.model_copy(update={
+            "ok": added == len(wanted) and not any("skipped" in n or "didn't" in n for n in notes),
+            "message": "; ".join([summary] + notes + [cart.message]),
+        })
+
+    async def add_to_cart(self, product: Product, quantity: int = 1, replace: bool = False) -> CartResult:
+        """One product: same as add_many([(product, quantity)])."""
+        return await self.add_many([(product, quantity)], replace=replace)
 
     # ---- bill and payment (you pay yourself)
 

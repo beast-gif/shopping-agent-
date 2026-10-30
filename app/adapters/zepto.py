@@ -198,12 +198,11 @@ class ZeptoAdapter(GroceryAdapter):
             raw=data if isinstance(data, dict) else {"value": data},
         )
 
-    async def add_to_cart(self, product: Product, quantity: int = 1, replace: bool = False) -> CartResult:
-        """replace=True empties the agent's Zepto cart first, so only this product is in it."""
-        self._require_address()
+    @staticmethod
+    def _cart_item(product: Product, quantity: int) -> dict[str, Any]:
         if not product.store_product_id:
             raise ValueError(f"Zepto product {product.name!r} has no storeProductId; search again")
-        raw = product.raw
+        raw = product.raw or {}
         item = {
             "productVariantId": product.product_id,
             "storeProductId": product.store_product_id,
@@ -214,9 +213,30 @@ class ZeptoAdapter(GroceryAdapter):
             "packSize": raw.get("packSize"),
             "imageUrl": product.image_url,
         }
+        return {k: v for k, v in item.items() if v is not None}
+
+    async def add_many(self, picks: list[tuple[Product, int]], replace: bool = True) -> CartResult:
+        """Several products in one update_cart call: [(milk, 2), (curd, 1)].
+        replace=True (default) empties the agent's Zepto cart first. That cart lives in the MCP
+        session only (your phone app doesn't show it), so replacing it never touches your own picks."""
+        self._require_address()
+        merged: dict[str, tuple[Product, int]] = {}
+        for product, quantity in picks:
+            prev = merged.get(product.product_id)
+            merged[product.product_id] = (product, quantity + (prev[1] if prev else 0))
         await self.hub.call(SERVER, "update_cart", {
             "deviceId": self.device_id,
-            "cartItems": [{k: v for k, v in item.items() if v is not None}],
+            "cartItems": [self._cart_item(p, q) for p, q in merged.values()],
+            "replaceCart": replace,
+        })
+        return await self.get_cart()
+
+    async def add_to_cart(self, product: Product, quantity: int = 1, replace: bool = False) -> CartResult:
+        """replace=True empties the agent's Zepto cart first, so only this product is in it."""
+        self._require_address()
+        await self.hub.call(SERVER, "update_cart", {
+            "deviceId": self.device_id,
+            "cartItems": [self._cart_item(product, quantity)],
             "replaceCart": replace,
         })
         return await self.get_cart()

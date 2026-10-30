@@ -50,7 +50,11 @@ class GroceryScoring(BaseModel):
     w_kcal: float = 0.4
     w_sugar: float = 0.4
     w_protein: float = 0.2
-    product_match_threshold: int = 90
+    product_match_threshold: int = 90          # token_sort_ratio of cleaned names for 'same product'
+    pack_tolerance: float = 0.05               # sizes may differ by 5% (e.g. 100 vs 104 ml)
+    details_limit: int = 20                    # Zepto products whose nutrition label is read
+    show: int = 15                             # products shown before you search with /word
+    max_quantity: int = 10
 
 
 class FoodScoring(BaseModel):

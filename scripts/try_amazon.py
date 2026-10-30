@@ -2,7 +2,7 @@
 
 Run from the project root (after scripts/amazon_login.py):
     python scripts/try_amazon.py ice cream              read-only: address, search, details of the top 3
-    python scripts/try_amazon.py ice cream --cart       also: add one to your cart, show the real bill,
+    python scripts/try_amazon.py ice cream --cart       also: add products (6x3, 9) to your cart, show the real bill,
                                                         then offer to take it out again
 
 Nothing is ordered. The cart is your real Amazon Now cart, so the script asks before removing
@@ -23,6 +23,7 @@ from app.browser import amazon_browser, signed_in_name  # noqa: E402
 from app.config import load_config  # noqa: E402
 from app.debug import save_debug  # noqa: E402
 from app.schemas import CartResult  # noqa: E402
+from app.workflows.grocery_logic import parse_picks  # noqa: E402
 
 
 def ask(prompt: str) -> asyncio.Future:
@@ -91,15 +92,23 @@ async def main() -> None:
         if not args.cart:
             return
 
-        pick = (await ask("\nAdd which number to your Amazon Now cart? (Enter = skip) ")).strip()
-        if not pick.isdigit() or not 1 <= int(pick) <= len(products):
-            return
-        product = products[int(pick) - 1]
-        qty_text = (await ask("Quantity? (Enter = 1) ")).strip()
-        quantity = int(qty_text) if qty_text.isdigit() and int(qty_text) > 0 else 1
+        print("\nPick products like  6x3, 9   (3 of #6 and 1 of #9).  Enter = skip")
+        while True:
+            text = (await ask("Add to your Amazon Now cart: ")).strip()
+            if not text:
+                return
+            try:
+                numbers = parse_picks(text, len(products))
+                break
+            except ValueError as e:
+                print(f"  {e}. Try again.")
+        picks = [(products[n - 1], qty) for n, qty in numbers]
+        for p, qty in picks:
+            print(f"   {qty} x {p.name}  (₹{p.price:g} each)")
+        asins = [p.product_id for p, _ in picks]
 
         replace = False
-        others = await amazon.other_items([product.product_id])
+        others = await amazon.other_items(asins)
         if others:
             print("\nYour Amazon Now cart already has:")
             for ln in others:
@@ -107,7 +116,7 @@ async def main() -> None:
             replace = (await ask("Remove those first? (y/N) ")).strip().lower() == "y"
 
         try:
-            cart = await amazon.add_to_cart(product, quantity, replace=replace)
+            cart = await amazon.add_many(picks, replace=replace)
         except AmazonNowError as e:
             print(f"  {e}")
             return
@@ -116,8 +125,8 @@ async def main() -> None:
         bill = await amazon.preview_order()
         show_cart("Bill from the cart page (what you'd pay):", bill)
 
-        if (await ask(f"\nTake {product.name[:40]!r} out of the cart again? (Y/n) ")).strip().lower() != "n":
-            cart = await amazon.remove_items([product.product_id])
+        if (await ask(f"\nTake the {len(picks)} picked product(s) out of the cart again? (Y/n) ")).strip().lower() != "n":
+            cart = await amazon.remove_items(asins)
             show_cart("Cart now:", cart)
 
 

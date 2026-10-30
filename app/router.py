@@ -15,7 +15,8 @@ ROUTER_PROMPT = """You route requests for a personal shopping assistant in Benga
 
 Pick exactly one intent:
 - grocery: a packaged product from a quick-commerce store (Zepto, Amazon Now).
-  Examples: "guilt-free ice cream", "2 litres of milk", "protein bars under 300".
+  Examples: "guilt-free ice cream", "2 litres of milk", "protein bars under 300",
+  "ice cream, chips and coke under 400".
 - food_dish: a cooked dish ordered from a restaurant (Swiggy, Zomato), no restaurant named.
   Examples: "biryani", "I want a masala dosa", "spicy chicken momos".
 - food_restaurant: the user names a specific restaurant they want to order from.
@@ -24,7 +25,9 @@ Pick exactly one intent:
 
 Fields:
 - item: the product or dish in plain words ("ice cream", "biryani"). For food_restaurant,
-  the dish only if one was also named, else null.
+  the dish only if one was also named, else null. For grocery with SEVERAL products, list
+  them all comma-separated, each with its own words ("guilt-free ice cream, dark chocolate,
+  chips"), and leave qualifier null.
 - qualifier: constraint words the user gave ("guilt-free", "veg", "spicy", "low sugar"), else null.
 - budget: integer rupees only if the user stated a budget ("under 300", "budget 250"), else null.
 - restaurant_name: the restaurant name for food_restaurant, else null.
