@@ -66,6 +66,7 @@ from app.workflows.grocery_logic import (
     groups_view,
     parse_picks,
     picks_for_app,
+    product_cards,
     quotes_table,
     relax_limits,
     relevant,
@@ -391,7 +392,8 @@ def build_grocery_graph(cfg: AppConfig, adapters: dict[str, GroceryAdapter],
                             + "\nType the numbers you want, x for more than one:   6x3, 9"
                             + "\n/word = search this list (/mango)   / = top again   /* = everything"
                             + "\nskip = nothing from this list   cancel = stop")
-        answer = str(interrupt({"prompt": prompt, "options": ["skip", "cancel"]})).strip()
+        cards = product_cards(groups, apps, plan_, gs.max_quantity, gs.show)
+        answer = str(interrupt({"prompt": prompt, "options": ["skip", "cancel"], "cards": cards})).strip()
         low = answer.lower()
         if low in CANCEL:
             return finish("Cancelled. Nothing was added to any cart.")

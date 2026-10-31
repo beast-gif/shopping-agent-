@@ -6,7 +6,21 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+_IMAGE_KEYS = ("imageUrl", "image_url", "imageLink", "image_link", "image", "img")
+
+
+def _find_image(raw: dict[str, Any]) -> Optional[str]:
+    """First http(s) image URL under a known key, at the top level or one level down."""
+    layers = [raw] + [v for v in raw.values() if isinstance(v, dict)]
+    for layer in layers:
+        for key in _IMAGE_KEYS:
+            value = layer.get(key)
+            if isinstance(value, str) and value.startswith("http"):
+                return value
+    return None
+
 
 GroceryPlatform = Literal["zepto", "amazon_now"]
 FoodPlatform = Literal["swiggy", "zomato"]
@@ -145,7 +159,16 @@ class MenuItem(BaseModel):
     category: Optional[str] = None
     kcal: Optional[float] = None     # Zomato publishes these for many dishes
     protein_g: Optional[float] = None
+    image_url: Optional[str] = None  # dish photo (Swiggy 'imageUrl', Zomato 'image_url')
     raw: dict[str, Any] = Field(default_factory=dict, exclude=True)
+
+    @model_validator(mode="after")
+    def _photo_from_raw(self) -> "MenuItem":
+        """Fills image_url from the app's raw item (its top level or one level down), so the
+        adapters don't each need to know the key."""
+        if not self.image_url and self.raw:
+            self.image_url = _find_image(self.raw)
+        return self
 
     @property
     def unit_price(self) -> float:

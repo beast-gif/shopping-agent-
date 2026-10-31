@@ -37,6 +37,7 @@ from app.schemas import CartResult, MenuRow, Outlet
 from app.workflows.food_logic import (
     APP_LABEL,
     best_quote,
+    dish_cards,
     items_for_app,
     menu_table,
     menu_view,
@@ -47,8 +48,10 @@ from app.workflows.food_logic import (
     parse_selection,
     quotes_table,
     rank_outlets,
+    restaurant_cards,
     restaurant_name_matches,
     rs,
+    same_restaurant_score,
 )
 
 SERVER_OF = {"swiggy": "swiggy_food", "zomato": "zomato"}
@@ -69,6 +72,7 @@ class FoodState(TypedDict, total=False):
     selection: Optional[list[dict]] # [{'row_id': '3', 'qty': 2}]
     quotes: Optional[list[dict]]    # [{'app', 'cart', 'missing', 'note'}]
     chosen: Optional[int]           # index into quotes
+    coupon_code: Optional[str]      # 'SWIGGYIT' you typed at the bills
     typed_confirm: Optional[str]
     payment: Optional[dict]
     error: Optional[str]            # shown above the next question, then cleared
@@ -183,7 +187,8 @@ def build_food_graph(cfg: AppConfig, adapters: dict[str, FoodAdapter],
         prompt = with_error(state, "Restaurants (R = 0.5·rating/5 + 0.3·speed + 0.2·has the dish):\n"
                             + outlets_table(outlets) + "\nPick a restaurant number, or cancel:")
         options = [{"label": f"{i}. {o.name}", "value": str(i)} for i, o in enumerate(outlets, 1)] + ["cancel"]
-        answer = str(interrupt({"prompt": prompt, "options": options})).strip().lower()
+        answer = str(interrupt({"prompt": prompt, "options": options,
+                                "cards": restaurant_cards(outlets)})).strip().lower()
         if answer in CANCEL:
             return finish("Cancelled.")
         index = None
@@ -205,9 +210,41 @@ def build_food_graph(cfg: AppConfig, adapters: dict[str, FoodAdapter],
 
     # ------------------------------------------------------------ menu + dishes
 
+    async def find_on_other_apps(outlet: Outlet, addresses: dict[str, str], apps: list[str]) -> Outlet:
+        """The restaurant you picked was only in one app's search results. Each app returns its
+        own top list, so it may still be on the other app: search that app for its NAME and
+        attach the listing if the same-restaurant rule matches (name >= 85 and distances
+        within 1 km). One extra search, only for the restaurant you chose."""
+        base = next(iter(outlet.listings.values()))
+        for app in apps:
+            if app in outlet.listings or app not in adapters:
+                continue
+            try:
+                found = await adapters[app].search(addresses[app], outlet.name)
+            except Exception as e:  # noqa: BLE001
+                log(f"  Couldn't look for {outlet.name} on {label(app)}: {describe_error(e)}")
+                continue
+            scored = [(same_restaurant_score(base, cand, fs.restaurant_name_threshold,
+                                             fs.same_restaurant_max_km_diff), cand)
+                      for cand in found.restaurants]
+            scored = [(sc, cand) for sc, cand in scored if sc is not None]
+            if not scored:
+                log(f"  {outlet.name} isn't on {label(app)} near you.")
+                continue
+            score, match = max(scored, key=lambda x: x[0])
+            if not match.is_open:
+                log(f"  {outlet.name} is on {label(app)} but closed there right now.")
+                continue
+            outlet.listings[app] = match
+            log(f"  Also on {label(app)}: {match.name}" + (f" ({match.offer})" if match.offer else "")
+                + (f", {match.distance_km:g} km" if match.distance_km is not None else ""))
+        return outlet
+
     async def load_menu(state: FoodState) -> dict:
         outlet = Outlet.model_validate(state["outlet"])
         addresses = state["place"]["addresses"]
+        if len(outlet.listings) < len([a for a in state["apps"] if a in adapters]):
+            outlet = await find_on_other_apps(outlet, addresses, state["apps"])
         apps = [a for a in APP_ORDER if a in outlet.listings and a in state["apps"]]
         log(f"Loading {outlet.name}'s menu from {' and '.join(label(a) for a in apps)}...")
         results = await asyncio.gather(
@@ -226,7 +263,8 @@ def build_food_graph(cfg: AppConfig, adapters: dict[str, FoodAdapter],
         on_both = sum(1 for r in rows if len(r.items) > 1)
         log(f"  {len(rows)} dishes ({', '.join(f'{label(a)} {len(m)}' for a, m in menus.items())}; "
             f"{on_both} on both).")
-        return {"menu": [r.model_dump(mode="json") for r in rows], "menu_filter": None,
+        return {"outlet": outlet.model_dump(mode="json"),      # now with the other app's listing, if found
+                "menu": [r.model_dump(mode="json") for r in rows], "menu_filter": None,
                 "error": None, "route": "ask_dishes"}
 
     def ask_dishes(state: FoodState) -> dict:
@@ -243,7 +281,9 @@ def build_food_graph(cfg: AppConfig, adapters: dict[str, FoodAdapter],
                             + "\n   3x2, 7   -> 2 of dish 3 and 1 of dish 7"
                             + "\nTo search the menu type / and a word, e.g. /paneer   (just / shows everything again)"
                             + "\nback = other restaurants   cancel = stop")
-        answer = str(interrupt({"prompt": prompt, "options": ["back", "cancel"]})).strip()
+        cards = dish_cards(rows, apps, state["request"] if state.get("entry") == "dish" else "",
+                           fs.max_quantity, fs.menu_show)
+        answer = str(interrupt({"prompt": prompt, "options": ["back", "cancel"], "cards": cards})).strip()
         low = answer.lower()
         if low in CANCEL:
             return finish("Cancelled.")
@@ -299,14 +339,24 @@ def build_food_graph(cfg: AppConfig, adapters: dict[str, FoodAdapter],
             tip = f"\nCheapest{' complete' if not q.get('missing') else ''}: {best + 1}. {label(q['app'])} " \
                   f"at {rs(q['cart']['total'])}"
         prompt = with_error(state, "Your order, real bills from each app:\n" + quotes_table(quotes) + tip
-                            + "\nPick an app (number or name), back = change dishes, cancel:")
+                            + "\nPick an app (number or name), back = change dishes, cancel"
+                            + ("\ncoupon CODE = try a Swiggy code from your app, e.g. coupon SWIGGYIT"
+                               if any(q["app"] == "swiggy" and q.get("cart") for q in quotes) else "") + ":")
         options = [{"label": f"{k}. {label(q['app'])}" + (f" {rs(q['cart']['total'])}" if (q.get("cart") or {}).get("total") is not None else ""),
                     "value": str(k)} for k, q in enumerate(quotes, 1)] + ["back", "cancel"]
-        answer = str(interrupt({"prompt": prompt, "options": options})).strip().lower()
+        raw = str(interrupt({"prompt": prompt, "options": options})).strip()
+        answer = raw.lower()
         if answer in CANCEL:
             return finish("Cancelled. Nothing was ordered.")
         if answer == "back":
             return {"selection": None, "quotes": None, "error": None, "route": "ask_dishes"}
+        if answer.startswith("coupon"):
+            code = raw[6:].strip().upper()
+            if not code:
+                return {"error": "Type the code after the word coupon, e.g. coupon SWIGGYIT.", "route": "ask_app"}
+            if not any(q["app"] == "swiggy" and q.get("cart") for q in quotes):
+                return {"error": "There's no Swiggy cart to apply a coupon to.", "route": "ask_app"}
+            return {"coupon_code": code, "error": None, "route": "apply_coupon"}
         index = None
         if answer.isdigit() and 1 <= int(answer) <= len(quotes):
             index = int(answer) - 1
@@ -317,6 +367,21 @@ def build_food_graph(cfg: AppConfig, adapters: dict[str, FoodAdapter],
         if not quotes[index].get("cart") or quotes[index]["cart"].get("total") is None:
             return {"error": f"{label(quotes[index]['app'])} has no bill for this order.", "route": "ask_app"}
         return {"chosen": index, "error": None, "route": "ask_confirm"}
+
+    async def apply_coupon(state: FoodState) -> dict:
+        """'coupon SWIGGYIT': applies it to the Swiggy cart and refreshes Swiggy's bill."""
+        code = state["coupon_code"]
+        quotes = [dict(q) for q in state["quotes"]]
+        i = next(i for i, q in enumerate(quotes) if q["app"] == "swiggy")
+        adapter = adapters["swiggy"]
+        log(f"Trying coupon {code} on Swiggy...")
+        try:
+            cart, note = await adapter.apply_coupon(state["place"]["addresses"]["swiggy"], code)
+        except Exception as e:  # noqa: BLE001
+            return {"error": f"Couldn't apply {code}: {describe_error(e)}", "route": "ask_app"}
+        log(f"  {note}")
+        quotes[i] = {**quotes[i], "cart": cart.model_dump(mode="json"), "note": note}
+        return {"quotes": quotes, "coupon_code": None, "error": None, "route": "ask_app"}
 
     # ------------------------------------------------------------ confirm + pay
 
@@ -376,7 +441,8 @@ def build_food_graph(cfg: AppConfig, adapters: dict[str, FoodAdapter],
     nodes = {
         "find_place": find_place, "ask_place": ask_place, "search": search,
         "ask_restaurant": ask_restaurant, "load_menu": load_menu, "ask_dishes": ask_dishes,
-        "quote": quote, "ask_app": ask_app, "ask_confirm": ask_confirm, "place_order": place_order,
+        "quote": quote, "ask_app": ask_app, "apply_coupon": apply_coupon,
+        "ask_confirm": ask_confirm, "place_order": place_order,
     }
     for name, fn in nodes.items():
         g.add_node(name, fn)

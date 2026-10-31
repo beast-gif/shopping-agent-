@@ -7,14 +7,16 @@
 <style>
   :root {
     --bg: #f6f5f2; --panel: #ffffff; --ink: #1d1d1b; --muted: #75736d; --line: #e4e1da;
-    --accent: #e8590c; --accent-ink: #ffffff; --user: #1d1d1b; --user-ink: #ffffff;
-    --ok: #2b8a3e; --warn: #c92a2a; --chip: #efede8; --mono-bg: #fbfaf8;
+    --accent: #e8590c; --accent-ink: #ffffff; --accent-soft: #fff1e8; --user: #1d1d1b; --user-ink: #ffffff;
+    --ok: #2b8a3e; --ok-soft: #ebfbee; --warn: #c92a2a; --warn-soft: #fff5f5; --chip: #efede8;
+    --mono-bg: #fbfaf8; --img-bg: #ffffff;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #141413; --panel: #1d1d1b; --ink: #ecebe6; --muted: #9b998f; --line: #33322e;
-      --accent: #ff7a33; --accent-ink: #141413; --user: #ecebe6; --user-ink: #141413;
-      --ok: #69db7c; --warn: #ff8787; --chip: #2a2926; --mono-bg: #181816;
+      --accent: #ff7a33; --accent-ink: #141413; --accent-soft: #3a2416; --user: #ecebe6; --user-ink: #141413;
+      --ok: #69db7c; --ok-soft: #1b2e1f; --warn: #ff8787; --warn-soft: #3a1c1c; --chip: #2a2926;
+      --mono-bg: #181816; --img-bg: #f4f3ef;
     }
   }
   * { box-sizing: border-box; }
@@ -36,10 +38,10 @@
            background: var(--panel); color: var(--ink); padding: 6px 12px; }
   button:hover:not(:disabled) { border-color: var(--accent); }
   button:disabled { opacity: .45; cursor: default; }
-  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
 
   main { flex: 1; overflow-y: auto; padding: 20px 16px 8px; }
-  .feed { max-width: 1040px; margin: 0 auto; display: flex; flex-direction: column; gap: 10px; }
+  .feed { max-width: 1100px; margin: 0 auto; display: flex; flex-direction: column; gap: 10px; }
   .user { align-self: flex-end; background: var(--user); color: var(--user-ink);
           padding: 8px 14px; border-radius: 14px 14px 4px 14px; max-width: 70%; white-space: pre-wrap; }
   .logs { font: 12.5px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace; color: var(--muted);
@@ -47,17 +49,74 @@
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
   .card.done { border-left: 4px solid var(--ok); white-space: pre-wrap; }
   .card.error { border-left: 4px solid var(--warn); color: var(--warn); }
-  .card pre { margin: 0; background: var(--mono-bg); border-radius: 8px; padding: 10px 12px;
+  pre.table { margin: 0; background: var(--mono-bg); border-radius: 8px; padding: 10px 12px;
               font: 12.5px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;
               overflow-x: auto; white-space: pre; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 13px; margin: 6px 0; }
   .options { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
   .typed { margin-top: 8px; font-size: 13px; color: var(--muted); }
   .typed code { color: var(--accent); font-weight: 600; }
   .qr { display: flex; gap: 14px; align-items: center; }
   .qr img { width: 220px; height: 220px; image-rendering: pixelated; border-radius: 8px; background: #fff; padding: 6px; }
 
+  /* ---- card lists ---- */
+  .qhead { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .qhead .title { font-weight: 600; }
+  .qhead .note { color: var(--muted); font-size: 13px; }
+  .qhead input { margin-left: auto; min-width: 200px; font: inherit; font-size: 14px; padding: 6px 10px;
+                 border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(215px, 1fr)); gap: 10px; }
+  .grid.wide { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+  .item { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column;
+          background: var(--panel); position: relative; }
+  .item.picked { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .item.off { opacity: .55; }
+  .item .img { height: 120px; background: var(--img-bg); display: flex; align-items: center; justify-content: center; }
+  .item .img img { max-width: 100%; max-height: 120px; object-fit: contain; }
+  .item .img .ph { font-size: 34px; color: #c9c6bd; font-weight: 700; }
+  .item .num { position: absolute; top: 6px; left: 6px; background: var(--panel); border: 1px solid var(--line);
+               border-radius: 6px; font-size: 12px; padding: 0 6px; color: var(--muted); }
+  .item .ad { position: absolute; top: 6px; right: 6px; background: var(--chip); border-radius: 6px;
+              font-size: 11px; padding: 0 6px; color: var(--muted); }
+  .item .body { padding: 8px 10px; display: flex; flex-direction: column; gap: 5px; flex: 1; }
+  .item .name { font-size: 14px; font-weight: 600; line-height: 1.3;
+                display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .item .sub { font-size: 12.5px; color: var(--muted); }
+  .item .desc { font-size: 12px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2;
+                -webkit-box-orient: vertical; overflow: hidden; }
+  .prices { display: flex; flex-wrap: wrap; gap: 5px; }
+  .price { font-size: 12.5px; border-radius: 6px; padding: 1px 7px; background: var(--chip); }
+  .price.best { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .price s { color: var(--muted); font-weight: 400; margin-left: 3px; }
+  .health { font-size: 12px; display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+  .badge { border-radius: 6px; padding: 0 6px; font-size: 12px; font-weight: 600; }
+  .badge.pass { background: var(--ok-soft); color: var(--ok); }
+  .badge.fail { background: var(--warn-soft); color: var(--warn); }
+  .badge.unknown { background: var(--chip); color: var(--muted); }
+  .veg { width: 13px; height: 13px; border: 1.5px solid var(--ok); display: inline-flex; align-items: center;
+         justify-content: center; border-radius: 2px; vertical-align: -2px; margin-right: 4px; }
+  .veg::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
+  .veg.nv { border-color: var(--warn); } .veg.nv::after { background: var(--warn); }
+  .stepper { display: flex; align-items: center; justify-content: space-between; margin-top: auto; padding-top: 4px; }
+  .stepper .per { font-size: 12px; color: var(--muted); }
+  .stepper .ctl { display: flex; align-items: center; gap: 2px; }
+  .stepper button { width: 30px; height: 30px; padding: 0; border-radius: 8px; font-weight: 700; }
+  .stepper .add { width: auto; padding: 0 14px; color: var(--accent); border-color: var(--accent); }
+  .stepper .q { min-width: 26px; text-align: center; font-weight: 700; }
+  .warnline { font-size: 12px; color: var(--warn); }
+  .rest { text-align: left; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; border-radius: 10px; }
+  .rest .name { font-weight: 600; }
+  .rest .meta { font-size: 13px; color: var(--muted); }
+  .rest .offer { font-size: 12.5px; color: var(--accent); }
+  .more { margin-top: 10px; }
+  .actionbar { position: sticky; bottom: 0; margin: 12px -14px -12px; padding: 10px 14px;
+               background: var(--panel); border-top: 1px solid var(--line); border-radius: 0 0 12px 12px;
+               display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .actionbar .sum { margin-right: auto; font-size: 14px; }
+  .answered .actionbar { position: static; }
+
   footer { border-top: 1px solid var(--line); background: var(--panel); padding: 12px 16px; }
-  .composer { max-width: 1040px; margin: 0 auto; display: flex; flex-direction: column; gap: 8px; }
+  .composer { max-width: 1100px; margin: 0 auto; display: flex; flex-direction: column; gap: 8px; }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; }
   .chips button { background: var(--chip); border-color: transparent; font-size: 13px; padding: 4px 10px; border-radius: 999px; }
   .row { display: flex; gap: 8px; }
@@ -65,7 +124,11 @@
                border: 1px solid var(--line); background: var(--bg); color: var(--ink); outline: none; }
   .row input:focus { border-color: var(--accent); }
   .hint { font-size: 12.5px; color: var(--muted); min-height: 1em; }
-  @media (max-width: 640px) { .user { max-width: 90%; } header { padding: 10px 16px; } }
+  @media (max-width: 640px) {
+    .user { max-width: 90%; } header { padding: 10px 16px; }
+    .grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
+    .qhead input { margin-left: 0; width: 100%; }
+  }
 </style>
 </head>
 <body>
@@ -98,32 +161,233 @@ const input = document.getElementById("input"), sendBtn = document.getElementByI
 const dot = document.getElementById("dot"), statusEl = document.getElementById("status");
 const hint = document.getElementById("hint"), chips = document.getElementById("chips");
 const startOver = document.getElementById("startOver");
-let ws = null, busy = false, waiting = false, logBlock = null;
+let ws = null, busy = false, waiting = false, logBlock = null, replaying = false;
+
+const rs = v => v == null ? "—" : "₹" + (Math.round(v * 100) / 100);
+const num = v => v == null ? "—" : (v >= 10 ? Math.round(v) : Math.round(v * 10) / 10);
 
 function el(tag, cls, text) {
   const e = document.createElement(tag);
   if (cls) e.className = cls;
-  if (text !== undefined) e.textContent = text;
+  if (text !== undefined && text !== null) e.textContent = text;
   return e;
 }
-function stick() { scroller.scrollTop = scroller.scrollHeight; }
-function disableOldOptions() {
-  feed.querySelectorAll(".options button").forEach(b => b.disabled = true);
+function stick() { if (!replaying) scroller.scrollTop = scroller.scrollHeight; }
+
+/* Once you answer, older questions are frozen (their buttons and steppers can't send again). */
+function freezeQuestions() {
+  feed.querySelectorAll(".question:not(.answered)").forEach(q => {
+    q.classList.add("answered");
+    q.querySelectorAll("button, input").forEach(b => b.disabled = true);
+  });
 }
 function setState() {
-  dot.className = "dot " + (ws && ws.readyState === 1 ? (busy ? "busy" : "on") : "");
-  statusEl.textContent = !(ws && ws.readyState === 1) ? "offline, reconnecting…" : busy ? "working…" : waiting ? "waiting for you" : "ready";
+  const online = ws && ws.readyState === 1;
+  dot.className = "dot " + (online ? (busy ? "busy" : "on") : "");
+  statusEl.textContent = !online ? "offline, reconnecting…" : busy ? "working…" : waiting ? "waiting for you" : "ready";
   sendBtn.disabled = busy;
   chips.hidden = waiting || busy;
   startOver.hidden = !waiting || busy;
   input.placeholder = waiting ? "Type your answer (or use the buttons)" : "What do you want? e.g. biryani, guilt free ice cream under 200";
 }
 
+/* ---------------------------------------------------------------- option buttons */
+function optionButtons(options, into) {
+  (options || []).forEach(o => {
+    const label = typeof o === "string" ? o : o.label, value = typeof o === "string" ? o : o.value;
+    const b = el("button", "", label);
+    b.onclick = () => send(value);
+    into.append(b);
+  });
+}
+
+/* ---------------------------------------------------------------- cards */
+function imageBox(src, title) {
+  const box = el("div", "img");
+  const ph = () => { box.innerHTML = ""; box.append(el("div", "ph", (title || "?").trim()[0] || "?")); };
+  if (src) {
+    const img = el("img"); img.loading = "lazy"; img.alt = ""; img.referrerPolicy = "no-referrer";
+    img.src = src; img.onerror = ph; box.append(img);
+  } else ph();
+  return box;
+}
+
+function priceChips(item, apps) {
+  const wrap = el("div", "prices");
+  const vals = Object.values(item.prices || {});
+  const low = vals.length ? Math.min(...vals) : null;
+  const unique = vals.filter(v => v === low).length === 1 && vals.length > 1;
+  apps.forEach(a => {
+    const p = (item.prices || {})[a.id];
+    const chip = el("span", "price" + (unique && p === low ? " best" : ""));
+    chip.textContent = `${a.label} ${p == null ? "—" : rs(p)}`;
+    const m = (item.mrp || {})[a.id];
+    if (p != null && m && m > p) chip.append(el("s", "", rs(m)));
+    wrap.append(chip);
+  });
+  return wrap;
+}
+
+function stepper(state, item, maxQty, enabled, onChange) {
+  const box = el("div", "stepper");
+  box.append(el("span", "per", item.per100 != null ? `${rs(item.per100)}/100` : ""));
+  const ctl = el("div", "ctl");
+  box.append(ctl);
+  const draw = () => {
+    ctl.innerHTML = "";
+    const q = state.get(item.value) || 0;
+    if (!enabled) { ctl.append(el("span", "per", "can't add")); return; }
+    if (q === 0) {
+      const add = el("button", "add", "ADD");
+      add.onclick = () => { state.set(item.value, 1); draw(); onChange(); };
+      ctl.append(add);
+    } else {
+      const minus = el("button", "", "−"), plus = el("button", "", "+");
+      minus.onclick = () => { q <= 1 ? state.delete(item.value) : state.set(item.value, q - 1); draw(); onChange(); };
+      plus.onclick = () => { if (q < maxQty) { state.set(item.value, q + 1); draw(); onChange(); } };
+      plus.disabled = q >= maxQty;
+      ctl.append(minus, el("span", "q", q), plus);
+    }
+  };
+  draw();
+  return box;
+}
+
+function productCard(item, cards, state, onChange) {
+  const c = el("div", "item");
+  c.dataset.search = (item.title + " " + (item.size || "")).toLowerCase();
+  c.append(imageBox(item.image, item.title), el("span", "num", "#" + item.value));
+  if (item.ad) c.append(el("span", "ad", "ad"));
+  const b = el("div", "body");
+  b.append(el("div", "name", item.title));
+  b.append(el("div", "sub", [item.size, item.rating ? `★ ${item.rating}` : ""].filter(Boolean).join(" · ")));
+  b.append(priceChips(item, cards.apps));
+  if (cards.health) {
+    const h = el("div", "health");
+    const v = item.verdict || "unknown";
+    h.append(el("span", "badge " + v, v === "pass" ? "✓" : v === "fail" ? "✗" : "?"));
+    if (item.G != null) h.append(el("span", "badge unknown", "G " + item.G.toFixed(2)));
+    if (item.kcal != null || item.sugar != null || item.protein != null) {
+      h.append(el("span", "", `${num(item.kcal)} kcal · ${num(item.sugar)} g sugar · ${num(item.protein)} g prot` +
+                              (item.borrowed ? " ~" : "")));
+    } else {
+      h.append(el("span", "", item.claim ? "no label · pack claim" : "no label"));
+    }
+    b.append(h);
+  }
+  b.append(stepper(state, item, cards.max_qty || 10, Object.keys(item.prices || {}).length > 0, () => {
+    c.classList.toggle("picked", state.has(item.value)); onChange();
+  }));
+  c.append(b);
+  return c;
+}
+
+function dishCard(item, cards, state, onChange) {
+  const c = el("div", "item" + (item.orderable ? "" : " off"));
+  c.dataset.search = (item.title + " " + (item.category || "") + " " + (item.description || "")).toLowerCase();
+  c.append(imageBox(item.image, item.title), el("span", "num", "#" + item.value));
+  const b = el("div", "body");
+  const name = el("div", "name");
+  if (item.veg === true || item.veg === false) name.append(el("span", "veg" + (item.veg ? "" : " nv")));
+  name.append(item.title);
+  b.append(name);
+  const sub = [item.category, item.kcal ? `${Math.round(item.kcal)} kcal` : "", item.rating ? `★ ${item.rating}` : ""].filter(Boolean);
+  if (sub.length) b.append(el("div", "sub", sub.join(" · ")));
+  if (item.description) b.append(el("div", "desc", item.description));
+  b.append(priceChips(item, cards.apps));
+  if (item.note) b.append(el("div", "warnline", item.note));
+  b.append(stepper(state, item, cards.max_qty || 10, item.orderable, () => {
+    c.classList.toggle("picked", state.has(item.value)); onChange();
+  }));
+  c.append(b);
+  return c;
+}
+
+function restaurantCard(item) {
+  const btn = el("button", "rest");
+  btn.dataset.search = (item.title + " " + (item.subtitle || "") + " " + (item.cuisines || "")).toLowerCase();
+  btn.append(el("div", "name", `${item.value}. ${item.title}`));
+  const meta = [item.subtitle, item.rating ? `★ ${item.rating}` : "", item.eta ? `${Math.round(item.eta)} min` : "",
+                item.km != null ? `${item.km} km` : "", item.score != null ? `R ${item.score}` : ""].filter(Boolean);
+  btn.append(el("div", "meta", meta.join(" · ")));
+  if (item.cuisines) btn.append(el("div", "meta", item.cuisines));
+  (item.apps || []).forEach(a => btn.append(el("div", "offer", `${a.label}${a.ad ? " (ad)" : ""}${a.offer ? ": " + a.offer : ""}`)));
+  btn.onclick = () => send(item.value);
+  return btn;
+}
+
+function renderCards(q, ev) {
+  const cards = ev.cards, multi = !!cards.multi;
+  const state = new Map();                       // value -> quantity
+  const head = el("div", "qhead");
+  head.append(el("span", "title",
+    cards.kind === "products" ? "Pick products" : cards.kind === "dishes" ? "Pick dishes" : "Pick a restaurant"));
+  if (cards.note) head.append(el("span", "note", cards.note));
+  const search = el("input"); search.placeholder = "Search this list…";
+  head.append(search);
+  q.append(head);
+
+  const grid = el("div", "grid" + (cards.kind === "restaurants" ? " wide" : ""));
+  const nodes = cards.items.map(item =>
+    cards.kind === "products" ? productCard(item, cards, state, update)
+    : cards.kind === "dishes" ? dishCard(item, cards, state, update)
+    : restaurantCard(item));
+  nodes.forEach(n => grid.append(n));
+  q.append(grid);
+
+  const limit = cards.show || nodes.length;
+  let showAll = nodes.length <= limit;
+  const more = el("button", "more", "");
+  const applyFilter = () => {
+    const f = search.value.trim().toLowerCase();
+    nodes.forEach((n, i) => {
+      const hit = !f || n.dataset.search.includes(f);
+      n.style.display = hit && (f || showAll || i < limit || state.has(cards.items[i].value)) ? "" : "none";
+    });
+    more.hidden = !!f || showAll;
+    more.textContent = `Show all ${nodes.length}`;
+  };
+  more.onclick = () => { showAll = true; applyFilter(); };
+  search.oninput = applyFilter;
+  q.append(more);
+  applyFilter();
+
+  const bar = el("div", "actionbar");
+  const sum = el("span", "sum", "");
+  bar.append(sum);
+  let go = null;
+  if (multi) {
+    go = el("button", "primary", cards.kind === "products" ? "Add to basket" : "Get the bills");
+    go.disabled = true;
+    go.onclick = () => {
+      const parts = [...state.entries()].map(([v, n]) => n > 1 ? `${v}x${n}` : v);
+      if (parts.length) send(parts.join(", "));
+    };
+    bar.append(go);
+  }
+  optionButtons((ev.options || []).filter(o => !(typeof o === "object" && /^\d+$/.test(o.value))), bar);   // skip/back/cancel
+  q.append(bar);
+
+  function update() {
+    if (!multi) return;
+    let count = 0, total = 0;
+    state.forEach((n, v) => {
+      const item = cards.items.find(i => i.value === v);
+      const vals = Object.values(item.prices || {});
+      count += n; total += (vals.length ? Math.min(...vals) : 0) * n;
+    });
+    sum.textContent = count ? `${count} selected · from ${rs(total)} (listed prices)` : "Tap ADD on what you want";
+    go.disabled = count === 0;
+  }
+  update();
+}
+
+/* ---------------------------------------------------------------- events */
 function render(ev) {
   if (ev.type !== "log") logBlock = null;
   switch (ev.type) {
     case "user":
-      disableOldOptions();
+      freezeQuestions();
       feed.append(el("div", "user", ev.text || "(Enter)"));
       break;
     case "log":
@@ -131,24 +395,25 @@ function render(ev) {
       else logBlock.textContent += "\n" + ev.text;
       break;
     case "question": {
-      const card = el("div", "card");
-      card.append(el("pre", "", ev.prompt || ""));
-      const opts = el("div", "options");
-      (ev.options || []).forEach(o => {
-        const label = typeof o === "string" ? o : o.label, value = typeof o === "string" ? o : o.value;
-        const b = el("button", "", label);
-        b.onclick = () => send(value);
-        opts.append(b);
-      });
-      if (opts.children.length) card.append(opts);
+      freezeQuestions();
+      const q = el("div", "card question");
+      if (ev.cards && ev.cards.items && ev.cards.items.length) {
+        renderCards(q, ev);
+        const d = el("details");
+        d.append(el("summary", "", "Show as text table"), el("pre", "table", ev.prompt || ""));
+        q.append(d);
+      } else {
+        q.append(el("pre", "table", ev.prompt || ""));
+        const opts = el("div", "options");
+        optionButtons(ev.options, opts);
+        if (opts.children.length) q.append(opts);
+      }
       if (ev.typed) {
         const t = el("div", "typed");
-        t.append("To place the order type exactly ");
-        t.append(el("code", "", ev.typed));
-        t.append(" (no button for this, on purpose)");
-        card.append(t);
+        t.append("To place the order type exactly ", el("code", "", ev.typed), " (no button for this, on purpose)");
+        q.append(t);
       }
-      feed.append(card);
+      feed.append(q);
       waiting = true;
       hint.textContent = ev.typed ? `Type exactly: ${ev.typed}` : "";
       break;
@@ -161,7 +426,7 @@ function render(ev) {
       break;
     }
     case "done":
-      disableOldOptions();
+      freezeQuestions();
       feed.append(el("div", "card done", ev.text));
       waiting = false; hint.textContent = "";
       break;
@@ -187,15 +452,16 @@ function connect() {
   ws.onmessage = (m) => {
     const ev = JSON.parse(m.data);
     if (ev.type === "hello") {
-      feed.innerHTML = ""; logBlock = null; waiting = false;
+      feed.innerHTML = ""; logBlock = null; waiting = false; replaying = true;
       (ev.history || []).forEach(render);
+      replaying = false;
       busy = !!ev.busy;
       if (ev.question && !waiting) render({ type: "question", ...ev.question });
       waiting = !!ev.question;
-      if (ev.unfinished && !ev.history.length) {
+      if (ev.unfinished && !(ev.history || []).length) {
         feed.prepend(el("div", "card", `You didn't finish “${ev.unfinished}”. Answer below to continue, or press Start over.`));
       }
-      setState(); stick();
+      setState(); scroller.scrollTop = scroller.scrollHeight;
       return;
     }
     render(ev);

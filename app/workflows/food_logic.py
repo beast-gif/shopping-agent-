@@ -346,3 +346,69 @@ def best_quote(quotes: list[dict]) -> Optional[int]:
     complete = [(i, q) for i, q in priced if not q.get("missing")]
     pool = complete or priced
     return min(pool, key=lambda p: total(p[1]))[0] if pool else None
+
+
+# ---------------------------------------------------------------- cards for the web page
+# The same lists as the tables above, as data: the page draws cards with photos and +/-
+# buttons, and turns your taps back into the same text ('3x2, 7' or '2') the terminal uses.
+
+
+def restaurant_cards(outlets: list[Outlet]) -> dict:
+    name_count: dict[str, int] = {}
+    for o in outlets:
+        name_count[_clean(o.name)] = name_count.get(_clean(o.name), 0) + 1
+    items = []
+    for i, o in enumerate(outlets, 1):
+        area = next((l.area for l in o.listings.values() if l.area), None)
+        dists = [l.distance_km for l in o.listings.values() if l.distance_km is not None]
+        cuisines = next((l.cuisines for l in o.listings.values() if l.cuisines), [])
+        items.append({
+            "value": str(i),
+            "title": o.name,
+            "subtitle": area if (area and name_count[_clean(o.name)] > 1) else (area or ""),
+            "rating": outlet_rating(o),
+            "eta": outlet_eta(o),
+            "km": round(min(dists), 1) if dists else None,
+            "cuisines": ", ".join(cuisines[:3]),
+            "score": o.score,
+            "apps": [{"label": APP_LABEL.get(a, a), "offer": l.offer, "ad": l.is_ad}
+                     for a, l in o.listings.items()],
+        })
+    return {"kind": "restaurants", "multi": False, "items": items,
+            "note": "R = 0.5·rating/5 + 0.3·speed + 0.2·has the dish"}
+
+
+def dish_cards(rows: list[MenuRow], apps: list[str], request: str, max_qty: int, show: int) -> dict:
+    """Every dish (the page searches them itself), dishes matching your request first."""
+    ordered = menu_view(rows, request, None, len(rows))
+    items = []
+    for r in ordered:
+        any_item = next(iter(r.items.values()))
+        prices, mrp, notes = {}, {}, []
+        for a in apps:
+            it = r.items.get(a)
+            if not it:
+                continue
+            if not it.in_stock:
+                notes.append(f"out of stock on {APP_LABEL.get(a, a)}")
+            elif it.has_variants:
+                notes.append(f"size choice on {APP_LABEL.get(a, a)} (not supported yet)")
+            else:
+                prices[a] = it.unit_price
+                if it.discounted_price is not None and it.price > it.discounted_price:
+                    mrp[a] = it.price
+        items.append({
+            "value": r.row_id,
+            "title": r.name + (f" ({r.variant})" if r.variant else ""),
+            "veg": any_item.is_veg,
+            "category": any_item.category,
+            "image": next((it.image_url for it in r.items.values() if it.image_url), None),
+            "description": (next((it.description for it in r.items.values() if it.description), "") or "")[:120],
+            "kcal": next((it.kcal for it in r.items.values() if it.kcal), None),
+            "rating": next((it.rating for it in r.items.values() if it.rating), None),
+            "prices": prices, "mrp": mrp,
+            "orderable": row_orderable(r),
+            "note": "; ".join(notes),
+        })
+    return {"kind": "dishes", "multi": True, "max_qty": max_qty, "show": show,
+            "apps": [{"id": a, "label": APP_LABEL.get(a, a)} for a in apps], "items": items}

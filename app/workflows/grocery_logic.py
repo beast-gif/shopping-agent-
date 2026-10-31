@@ -613,3 +613,46 @@ def quotes_table(quotes: list[dict[str, Any]], budget: Optional[int]) -> str:
         if budget and t is not None and t > budget:
             notes.append(f"   ⚠ {name} is {rs(round(t - budget, 2))} over your ₹{budget} budget")
     return "\n".join(lines + notes)
+
+
+# ---------------------------------------------------------------- cards for the web page
+
+
+def product_cards(groups: list[ProductGroup], apps: list[str], plan: GroceryPlan,
+                  max_qty: int, show: int) -> dict:
+    """The ranked products as data for the page's cards (photo, both prices, label, G, +/-).
+    Your taps come back as the same text the terminal uses: '4x2, 7'."""
+    items = []
+    for g in groups:
+        prices = {a: g.price(a) for a in apps if g.price(a) is not None}
+        low = min(prices.values()) if prices else None
+        cheaper = None
+        if len(prices) > 1 and list(prices.values()).count(low) == 1:
+            cheaper = next(a for a, v in prices.items() if v == low)
+        mrp = {a: p.mrp for a, p in g.items.items() if p.mrp and p.price and p.mrp > p.price}
+        n = g.nutrition
+        items.append({
+            "value": g.gid,
+            "title": g.name,
+            "size": _size(g),
+            "image": next((p.image_url for p in g.items.values() if p.image_url), None),
+            "rating": g.rating,
+            "prices": prices, "mrp": mrp, "cheaper": cheaper,
+            "per100": g.per_100(),
+            "ad": any(p.is_ad for p in g.items.values()),
+            "verdict": g.verdict if plan.health_mode else None,
+            "G": g.health if plan.health_mode else None,
+            "kcal": n.kcal if n else None, "sugar": n.sugar_g if n else None,
+            "protein": n.protein_g if n else None, "basis": n.basis if n else None,
+            "borrowed": bool(g.nutrition_from and g.nutrition_from.startswith("label of")),
+            "claim": g.claims,
+        })
+    limits = ", ".join(x for x in [
+        f"≤{plan.max_kcal:g} kcal" if plan.max_kcal is not None else "",
+        f"≤{plan.max_sugar_g:g} g sugar" if plan.max_sugar_g is not None else "",
+        f"≥{plan.min_protein_g:g} g protein" if plan.min_protein_g is not None else ""] if x)
+    note = (f"Limits per 100 g/ml: {limits}" if limits else "") if plan.health_mode else \
+        "Cheapest per 100 g/ml first"
+    return {"kind": "products", "multi": True, "max_qty": max_qty, "show": show,
+            "health": plan.health_mode, "note": note,
+            "apps": [{"id": a, "label": APP_LABEL.get(a, a)} for a in apps], "items": items}

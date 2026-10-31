@@ -260,7 +260,11 @@ class SwiggyAdapter(FoodAdapter):
         walk(data)
         codes = list(dict.fromkeys(named or generic))
         if not codes:
-            return cart, "no coupons for this cart"
+            summary = (data or {}).get("summary") if isinstance(data, dict) else None
+            filt = str((summary or {}).get("filter_applied") or "")
+            why = (f"Swiggy's MCP lists only '{filt}' coupons and has none for this cart"
+                   if filt else "Swiggy lists no coupons for this cart")
+            return cart, why + "; type 'coupon CODE' to try one from your Swiggy app"
 
         best, best_code, last_applied = cart, None, None
         for code in codes[:max_tries]:
@@ -284,6 +288,22 @@ class SwiggyAdapter(FoodAdapter):
                 return await self.get_cart(address_id), f"couldn't re-apply best coupon {best_code}"
         saved = (cart.total - best.total) if (cart.total is not None and best.total is not None) else None
         return best, f"coupon {best_code} applied" + (f" (saves ₹{saved:g})" if saved else "")
+
+    async def apply_coupon(self, address_id: str, code: str) -> tuple[CartResult, str]:
+        """Applies a code you typed (e.g. one shown in your Swiggy app) and reads the real bill
+        back. Returns (cart, note); the note says whether it lowered the bill and, if not, what
+        Swiggy said."""
+        before = await self.get_cart(address_id)
+        try:
+            data = await self.hub.call(SERVER, "apply_food_coupon", {"couponCode": code, "addressId": address_id})
+        except Exception as e:  # noqa: BLE001
+            return before, f"coupon {code} not applied: {describe_error(e)}"
+        save_debug("swiggy_apply_coupon.json", data)
+        after = await self.get_cart(address_id)
+        said = first_value(data, ["message", "error", "errorMessage", "statusMessage", "status_message", "reason"])
+        if before.total is not None and after.total is not None and after.total < before.total - 0.5:
+            return after, f"coupon {code} applied (saves ₹{before.total - after.total:g})"
+        return after, f"coupon {code} didn't lower the bill" + (f": {said}" if said else "")
 
     # ---- ordering
     # Swiggy's documented UPI flow: get_payment_options -> place_food_order (PENDING_PAYMENT)
