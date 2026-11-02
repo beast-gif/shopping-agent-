@@ -7,10 +7,14 @@ fills the cart, and leaves only the payment to you.
   restaurant across both, shows one combined menu, builds the cart on both apps and shows
   the **real bills** (fees, taxes, offers), so you pick the cheaper one.
 - **Restaurant by name:** "meghana foods" goes straight to its menu.
+- **Coupons and offers:** Zomato applies its best offer by itself; for Swiggy, type a code from your
+  Swiggy app (`coupon SWIGGYIT`) and the bill is refreshed with Swiggy's real total.
 - **Groceries:** "guilt free ice cream under 200" searches **Zepto and Amazon Now**, reads
   nutrition labels, matches the same product across both apps, ranks by a health score, and
   compares the real bills. You can fill a **basket** (ice cream, chips, curd) and get one bill
   per app.
+- **Web page with cards:** product, dish and restaurant cards with photos, both apps' prices, the
+  nutrition label and +/− quantity buttons, served from your laptop.
 - **Location aware:** delivers to the right saved address (home, college ...) from Wi-Fi/GPS, or
   you tap the place.
 - **Payment stays with you:** nothing is ordered unless you type the exact `confirm <total>` and pay
@@ -103,6 +107,12 @@ The server pushes events as they happen: `log` (live progress), `question` (prom
 `image` (UPI QR), `done`, `error`, `busy`. A reload replays the history, and a server restart offers
 the unfinished request again.
 
+**Cards.** List questions also carry a `cards` block: products, dishes or restaurants, with photo
+links, both apps' prices, labels and G. The page draws cards with +/− buttons and turns your taps back
+into the same text the terminal uses (`#4 × 2, #7 × 1` → `"4x2, 7"`), so the graph reads picks in
+one way only. Photos load straight from the apps' image servers (Swiggy, Zomato, Zepto, Amazon). The
+agent passes along only the links the apps send.
+
 ---
 
 ## How it decides
@@ -113,9 +123,25 @@ the unfinished request again.
 R = 0.5 · rating/5 + 0.3 · (1 − ETA/ETA_max) + 0.2 · dish_match        (dish_match = 1, or 0.5)
 ```
 - **Same restaurant on both apps:** `token_set_ratio(names) ≥ 85` and their distances agree within 1 km.
+- **On only one app's list?** Each app returns its own top list, so a restaurant can be on both but
+  listed by one. When you pick a one-app restaurant, the agent searches the other app for its **name**
+  and attaches it if the same rule matches (e.g. "Sri Sai Palace": name 100, |1.1 − 1.2| km ≤ 1 ✓).
+  The menu and bills then cover both apps.
 - **Same dish on both menus:** `token_sort_ratio ≥ 90`, and veg/non-veg compatible.
 - **Is "nandhana palace" a restaurant or a dish?** It's a restaurant if a restaurant's name contains your
   words, AND dishes containing those words come from fewer than 2 restaurants whose names don't contain them.
+
+### Coupons
+
+- **Zomato:** its cart applies the best restaurant offer automatically (e.g. "Flat ₹75 OFF").
+- **Swiggy:** the agent asks `fetch_food_coupons` for codes and tries up to 4. Swiggy's MCP lists only
+  **COD-valid** coupons (`"filter_applied": "COD only"`), and that list is often empty. So at the bills
+  you can type `coupon CODE` with a code from your Swiggy app: the agent applies it, reads Swiggy's real
+  total back, and recompares the apps.
+  ```
+  before ₹349 → apply SWIGGYIT → after ₹299 → "coupon SWIGGYIT applied (saves ₹50)"
+  ```
+- Bank and UPI-app offers are applied at payment, so they never show up here.
 
 ### Products (groceries)
 
@@ -243,7 +269,12 @@ python scripts\chat.py
 | `ice cream, chips, curd` | a grocery basket, one bill |
 | `3x2, 7` | (in a list) 2 of #3 and 1 of #7 |
 | `/paneer` | (in a list) search the list; `/` = top again, `/*` = everything |
+| `coupon SWIGGYIT` | (at the food bills) apply a Swiggy coupon code from your app |
 | `back`, `skip`, `cancel`, `bill`, `remove 2` | as shown under each question |
+
+On the web page you mostly tap: place and budget buttons, **ADD** / **− n +** on cards, then
+**Add to basket** or **Get the bills**. Typing still works everywhere. Only `confirm <total>` has
+no button, on purpose.
 
 **Test one part at a time:**
 ```powershell
@@ -336,6 +367,8 @@ All git-ignored.
 | "Amazon not signed in" | `python scripts\amazon_login.py` |
 | Amazon left out at college | the agent can't switch Amazon addresses yet: change it at the top of Amazon Now |
 | An MCP login loops or fails | delete that app's file in `.tokens/` and run `scripts\list_tools.py` again |
+| Swiggy says "no coupons for this cart" | Swiggy's MCP lists only COD coupons: type `coupon CODE` from your Swiggy app at the bills |
+| A restaurant shows one app but is on both | tap it: the agent looks it up on the other app by name and says "Also on Zomato: …" |
 | A bill shows "other ₹X" | an unnamed fee; send `probes/grocery_quotes.json` / `probes/last_quotes.json` to name it |
 | The page says "offline" | the server stopped: run `python scripts\web.py` again (the unfinished request is offered) |
 
@@ -346,18 +379,19 @@ All git-ignored.
 **Not supported yet**
 - Switching Amazon Now's delivery address (it's used only when its pincode matches your place).
 - Dishes with size or add-on choices.
-- Swiggy coupon codes (none are applied yet).
+- Finding Swiggy coupon codes by itself (Swiggy's MCP lists only COD coupons; typed codes work).
 
 **Not yet run against the real apps**
 - Zepto UPI order.
 - Amazon's new-order detection.
 - Putting set-aside Amazon items back.
+- Typed Swiggy coupons that are UPI-only (whether `apply_food_coupon` accepts them).
 
 **Next**
-1. Product and dish cards with photos and +/− buttons on the web page.
-2. Amazon address switching (one more capture run).
-3. Order status, history and "order the same as last time".
-4. Saved preferences (veg only, default budget, favourite brands).
+1. Amazon address switching (one more capture run).
+2. Order status, history and "order the same as last time".
+3. Saved preferences (veg only, default budget, favourite brands).
+4. Dishes with sizes and add-ons.
 
 ---
 
