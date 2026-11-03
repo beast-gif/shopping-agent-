@@ -48,9 +48,10 @@ from app.location import detect_place, remember_place
 from app.mcp_client import describe_error
 from app.payment import show_payment, wait_for_payment
 from app.places import Place, load_places, match_place_name
-from app.schemas import Product
+from app.schemas import CartLine, CartResult, Product
 from app.workflows.grocery_logic import (
     APP_LABEL,
+    COMPARE_ONLY,
     PLAN_PROMPT,
     GroceryPlan,
     ProductGroup,
@@ -64,6 +65,7 @@ from app.workflows.grocery_logic import (
     fallback_plan,
     groups_table,
     groups_view,
+    listed_tip,
     parse_picks,
     picks_for_app,
     product_cards,
@@ -75,7 +77,7 @@ from app.workflows.grocery_logic import (
     within_budget,
 )
 
-APP_ORDER = ["zepto", "amazon_now"]
+APP_ORDER = ["zepto", "amazon_now", "blinkit", "flipkart_minutes"]
 CANCEL = {"cancel", "q", "quit", "exit", "stop"}
 
 
@@ -119,7 +121,13 @@ def build_grocery_graph(cfg: AppConfig, adapters: dict[str, GroceryAdapter],
     # ------------------------------------------------------------ place
 
     def set_place(place: Place, how: str) -> dict:
-        apps = [a for a in APP_ORDER if a in adapters and (a == "amazon_now" or place.address_for(a))]
+        def usable(a: str) -> bool:
+            if a == "amazon_now":
+                return True                                   # checked against its own address later
+            if a in COMPARE_ONLY:
+                return place.lat is not None and place.lng is not None   # searched by coordinates
+            return bool(place.address_for(a))
+        apps = [a for a in APP_ORDER if a in adapters and usable(a)]
         remember_place(place)
         log(f"Delivering to {place.name} ({how}).")
         if "zepto" in adapters and "zepto" not in apps:
@@ -127,7 +135,7 @@ def build_grocery_graph(cfg: AppConfig, adapters: dict[str, GroceryAdapter],
         if not apps:
             return finish(f"No grocery app can deliver to {place.name}.")
         return {"place": {"name": place.name, "how": how, "addresses": dict(place.addresses),
-                          "texts": dict(place.texts)},
+                          "texts": dict(place.texts), "lat": place.lat, "lng": place.lng},
                 "apps": apps, "error": None, "route": "next_item"}
 
     async def find_place(state: GroceryState) -> dict:
@@ -271,7 +279,11 @@ def build_grocery_graph(cfg: AppConfig, adapters: dict[str, GroceryAdapter],
 
     async def search_app(app: str, terms: list[str]) -> list[Product]:
         found: dict[str, Product] = {}
-        if app == "zepto":
+        if app in COMPARE_ONLY:
+            # Apify: you pay per result, so only your main search term, max_items results
+            for p in await adapters[app].search(terms[0]):
+                found.setdefault(p.product_id, p)
+        elif app == "zepto":
             sections = await adapters["zepto"].search_many(terms)
             ordered = [sections.get(t, []) for t in terms] + [ps for t, ps in sections.items() if t not in terms]
             for products in ordered:                             # keep the order of your terms
@@ -329,11 +341,22 @@ def build_grocery_graph(cfg: AppConfig, adapters: dict[str, GroceryAdapter],
                     log(f"  Zepto left out: {describe_error(e)}")
             elif app == "amazon_now" and await amazon_ready(place):
                 ready.append(app)
+            elif app in COMPARE_ONLY:
+                if place.get("lat") is None or place.get("lng") is None:
+                    log(f"  {label(app)} left out: {place['name']} has no coordinates.")
+                    continue
+                adapters[app].set_location(place["lat"], place["lng"], place["name"])
+                ready.append(app)
         if not ready:
-            return finish("Neither Zepto nor Amazon Now can be used here right now.")
+            return finish("No grocery app can be used here right now.")
 
-        log(f"Searching {' and '.join(label(a) for a in ready)}...")
+        log(f"Searching {', '.join(label(a) for a in ready)}..."
+            + ("  (Blinkit / Flipkart Minutes run on Apify and take 10-60 s)"
+               if any(a in COMPARE_ONLY for a in ready) else ""))
         results = await asyncio.gather(*(search_app(a, plan_.search_terms) for a in ready), return_exceptions=True)
+        runner = next((adapters[a].runner for a in ready if a in COMPARE_ONLY), None)
+        if runner is not None:
+            log(f"  Apify so far this session: about ${runner.cost_usd():.2f}")
         by_app: dict[str, list[Product]] = {}
         for app, res in zip(ready, results):
             if isinstance(res, BaseException):
@@ -463,7 +486,9 @@ def build_grocery_graph(cfg: AppConfig, adapters: dict[str, GroceryAdapter],
                 apps.remove("zepto")
         if not apps:
             return {"quotes": [], "after": "end", "route": "cleanup"}
-        log("Putting your picks in " + " and ".join(label(a) for a in apps) + " carts to get the real bills...")
+        carts = [a for a in apps if a not in COMPARE_ONLY]
+        log("Putting your picks in " + " and ".join(label(a) for a in carts) + " carts to get the real bills..."
+            if carts else "Adding up the listed prices...")
         raw: dict[str, Any] = {}
 
         async def one(app: str) -> dict[str, Any]:
@@ -471,6 +496,15 @@ def build_grocery_graph(cfg: AppConfig, adapters: dict[str, GroceryAdapter],
             if not items:
                 return {"app": app, "cart": None, "missing": missing, "note": "none of your picks are here"}
             adapter = adapters[app]
+            if app in COMPARE_ONLY:
+                # no cart to fill: the listed prices, and links to open the products in the app
+                lines = [CartLine(name=p.name, quantity=q, price=round(p.price * q, 2)) for p, q in items]
+                listed = CartResult(platform=app, ok=True, lines=lines,
+                                    item_total=round(sum(ln.price for ln in lines), 2),
+                                    message="listed prices; fees not known")
+                return {"app": app, "cart": listed.model_dump(mode="json"), "missing": missing,
+                        "note": "compare-only: open in the app to order", "listed_only": True,
+                        "links": [{"name": p.name, "qty": q, "url": p.url} for p, q in items]}
             try:
                 if app == "amazon_now":
                     added = await adapter.add_many(items, replace=bool(state.get("amazon_replace")))
@@ -496,7 +530,7 @@ def build_grocery_graph(cfg: AppConfig, adapters: dict[str, GroceryAdapter],
 
         quotes = list(await asyncio.gather(*(one(a) for a in apps)))
         save_debug("grocery_quotes.json", raw)       # the apps' raw bills, to check the fee parsing
-        if not any(q.get("cart") and q["cart"].get("total") is not None for q in quotes):
+        if not any(q.get("cart") and (q["cart"].get("total") is not None or q.get("listed_only")) for q in quotes):
             for q in quotes:
                 log(f"  {label(q['app'])}: {q.get('note')}")
             return {"quotes": quotes, "after": "end", "route": "cleanup"}
@@ -510,11 +544,16 @@ def build_grocery_graph(cfg: AppConfig, adapters: dict[str, GroceryAdapter],
             q = quotes[best]
             tip = (f"\nCheapest{' with everything' if not q.get('missing') else ''}: "
                    f"{best + 1}. {label(q['app'])} at ₹{compare_total(q):g}")
+        tip += listed_tip(quotes, best)
         prompt = with_error(state, "Real bills from each app:\n"
                             + quotes_table(quotes, state.get("budget") or None) + tip
                             + "\nPick an app (number or name), back = change the basket, cancel:")
-        options = [{"label": f"{k}. {label(q['app'])}" + (f" ₹{q['cart']['total']:g}" if (q.get("cart") or {}).get("total") is not None else ""),
-                    "value": str(k)} for k, q in enumerate(quotes, 1)] + ["back", "cancel"]
+        def option_label(k: int, q: dict) -> str:
+            cart = q.get("cart") or {}
+            if q.get("listed_only") and cart.get("item_total") is not None:
+                return f"{k}. {label(q['app'])} ₹{cart['item_total']:g} + fees (links)"
+            return f"{k}. {label(q['app'])}" + (f" ₹{cart['total']:g}" if cart.get("total") is not None else "")
+        options = [{"label": option_label(k, q), "value": str(k)} for k, q in enumerate(quotes, 1)] + ["back", "cancel"]
         answer = str(interrupt({"prompt": prompt, "options": options})).strip().lower()
         if answer in CANCEL:
             return {"after": "cancel", "route": "cleanup"}
@@ -529,6 +568,8 @@ def build_grocery_graph(cfg: AppConfig, adapters: dict[str, GroceryAdapter],
         if index is None:
             return {"error": f"'{answer}' isn't one of the options.", "route": "ask_app"}
         cart = quotes[index].get("cart") or {}
+        if quotes[index].get("listed_only"):
+            return {"chosen": index, "error": None, "route": "open_links"}
         if cart.get("total") is None:
             return {"error": f"{label(quotes[index]['app'])} has no bill for this order.", "route": "ask_app"}
         if cart["total"] > cfg.ordering.max_order_total:
@@ -597,6 +638,19 @@ def build_grocery_graph(cfg: AppConfig, adapters: dict[str, GroceryAdapter],
                 log(f"  Couldn't undo the Amazon Now cart ({describe_error(e)}); check it in the app.")
         await put_aside_back(state)
 
+    async def open_links(state: GroceryState) -> dict:
+        """You picked Blinkit / Flipkart Minutes: the agent can't fill their cart, so it puts the
+        Amazon cart back as it was and gives you the product links to add in the app."""
+        await undo_amazon(state)
+        q = state["quotes"][state["chosen"]]
+        name = label(q["app"])
+        lines = [f"  {x['qty']} x {x['name']}" + (f"\n     {x['url']}" if x.get("url") else "")
+                 for x in q.get("links") or []]
+        missing = f"\n(not on {name}: {', '.join(q['missing'])})" if q.get("missing") else ""
+        total = (q.get("cart") or {}).get("item_total")
+        return finish(f"Open these in {name} and add them to its cart (the agent can't fill {name}'s cart; "
+                      f"listed ₹{total:g} before its fees):\n" + "\n".join(lines) + missing)
+
     async def cleanup(state: GroceryState) -> dict:
         await undo_amazon(state)
         after = state.get("after")
@@ -655,7 +709,7 @@ def build_grocery_graph(cfg: AppConfig, adapters: dict[str, GroceryAdapter],
         "plan": plan, "ask_budget": ask_budget,
         "search": search, "ask_products": ask_products, "prepare": prepare, "ask_leftovers": ask_leftovers,
         "quote": quote, "ask_app": ask_app, "ask_confirm": ask_confirm, "place_order": place_order,
-        "cleanup": cleanup,
+        "open_links": open_links, "cleanup": cleanup,
     }
     for name, fn in nodes.items():
         g.add_node(name, fn)
