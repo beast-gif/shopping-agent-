@@ -20,6 +20,14 @@ mcp:
     zomato:
       url: https://mcp-server.zomato.com/mcp
       enabled: true
+    # Blinkit + Flipkart Minutes through Apify scraper Actors (read-only: prices and stock,
+    # no cart, no orders). ?tools= limits the server to exactly these tools, so the agent
+    # can't start any other (paid) Actor.
+    apify:
+      url: https://mcp.apify.com/?tools=s-r/blinkit-scraper,clearpath/flipkart-minutes-scraper,get-dataset-items
+      enabled: true
+      auth: bearer
+      token: ${APIFY_TOKEN}
 
   # Any tool whose name matches one of these (case-insensitive regex) is never
   # exposed or callable, even if it is also listed in allowed_tools.

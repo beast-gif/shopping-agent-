@@ -26,6 +26,8 @@ class LLMConfig(BaseModel):
 class McpServerConfig(BaseModel):
     url: str
     enabled: bool = True
+    auth: Literal["oauth", "bearer"] = "oauth"   # bearer = send 'Authorization: Bearer <token>' (Apify)
+    token: str = ""                              # for auth: bearer, e.g. ${APIFY_TOKEN} from .env
 
 
 class McpConfig(BaseModel):

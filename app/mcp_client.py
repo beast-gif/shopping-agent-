@@ -295,12 +295,16 @@ class McpHub:
         server = self.cfg.mcp.servers[name]
         server_stack = AsyncExitStack()
         try:
-            http = await server_stack.enter_async_context(
-                httpx2.AsyncClient(
-                    auth=self._oauth(name, server.url),
-                    timeout=httpx2.Timeout(30.0, read=300.0),
-                )
-            )
+            if server.auth == "bearer":
+                # API-token servers (Apify): no browser login, the token goes in a header
+                if not server.token:
+                    raise McpToolError(f"{name}: no token (set it in .env, e.g. APIFY_TOKEN)")
+                client = httpx2.AsyncClient(headers={"Authorization": f"Bearer {server.token}"},
+                                            timeout=httpx2.Timeout(30.0, read=300.0))
+            else:
+                client = httpx2.AsyncClient(auth=self._oauth(name, server.url),
+                                            timeout=httpx2.Timeout(30.0, read=300.0))
+            http = await server_stack.enter_async_context(client)
             read, write = await server_stack.enter_async_context(
                 streamable_http_client(server.url, http_client=http)
             )
