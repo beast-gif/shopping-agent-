@@ -48,6 +48,18 @@ class AmazonNowConfig(BaseModel):
     search_pages: int = 2                       # 10 results per page
 
 
+class ApifyConfig(BaseModel):
+    """Blinkit + Flipkart Minutes through Apify scraper Actors: compare-only (no cart).
+    You pay Apify per result, so these keep each search small."""
+    enabled: bool = True
+    max_items: int = 10                        # results per app per search (Blinkit's free cap is 10)
+    timeout_s: float = 90                      # stop waiting for a slow Actor after this
+    blinkit_tool: str = "s-r--blinkit-scraper"
+    flipkart_tool: str = "clearpath--flipkart-minutes-scraper"
+    usd_per_1000: dict[str, float] = Field(default_factory=lambda: {"blinkit": 5.0, "flipkart_minutes": 1.99})
+    usd_per_run: float = 0.005
+
+
 class GroceryScoring(BaseModel):
     w_kcal: float = 0.4
     w_sugar: float = 0.4
@@ -102,6 +114,7 @@ class AppConfig(BaseModel):
     llm: LLMConfig
     mcp: McpConfig
     amazon_now: AmazonNowConfig = Field(default_factory=AmazonNowConfig)
+    apify: ApifyConfig = Field(default_factory=ApifyConfig)
     ordering: OrderingConfig = Field(default_factory=OrderingConfig)
     locations: LocationsConfig = Field(default_factory=LocationsConfig)
     scoring: ScoringConfig = Field(default_factory=ScoringConfig)

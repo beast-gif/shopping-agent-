@@ -22,9 +22,9 @@ def _find_image(raw: dict[str, Any]) -> Optional[str]:
     return None
 
 
-GroceryPlatform = Literal["zepto", "amazon_now"]
+GroceryPlatform = Literal["zepto", "amazon_now", "instamart", "blinkit", "flipkart_minutes"]
 FoodPlatform = Literal["swiggy", "zomato"]
-Platform = Literal["zepto", "amazon_now", "swiggy", "zomato"]
+Platform = Literal["zepto", "amazon_now", "instamart", "blinkit", "flipkart_minutes", "swiggy", "zomato"]
 Intent = Literal["grocery", "food_dish", "food_restaurant", "unknown"]
 
 

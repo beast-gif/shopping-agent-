@@ -10,7 +10,8 @@ Run from the project root:
        at the basket prompt plain commas work)
     python scripts/try_grocery.py protein bar --budget 300
     python scripts/try_grocery.py milk --place college
-    python scripts/try_grocery.py curd --no-amazon          # Zepto only (no browser)
+    python scripts/try_grocery.py curd --no-amazon          # no browser
+    python scripts/try_grocery.py curd --no-apify           # no Blinkit / Flipkart Minutes (no Apify cost)
 """
 from __future__ import annotations
 
@@ -28,6 +29,8 @@ from langgraph.checkpoint.memory import InMemorySaver  # noqa: E402
 from langgraph.types import Command  # noqa: E402
 
 from app.adapters.amazon_now import AmazonNowAdapter  # noqa: E402
+from app.adapters.apify import ApifyRunner, BlinkitAdapter, FlipkartMinutesAdapter  # noqa: E402
+from app.adapters.instamart import InstamartAdapter  # noqa: E402
 from app.adapters.zepto import ZeptoAdapter  # noqa: E402
 from app.browser import amazon_browser, signed_in_name  # noqa: E402
 from app.config import load_config  # noqa: E402
@@ -40,13 +43,22 @@ async def main(a: argparse.Namespace) -> None:
     async with AsyncExitStack() as stack:
         adapters = {}
 
-        if not a.no_zepto:
+        servers = ([] if a.no_zepto else ["zepto"]) + \
+            ([] if a.no_instamart or "instamart" not in cfg.mcp.servers else ["instamart"]) + \
+            ([] if a.no_apify or not cfg.apify.enabled or "apify" not in cfg.mcp.servers else ["apify"])
+        if servers:
             hub = await stack.enter_async_context(McpHub(cfg))
-            errors = await hub.connect_all(["zepto"])
-            if "zepto" in errors:
-                print(f"[zepto] not connected: {errors['zepto']}")
-            else:
+            errors = await hub.connect_all(servers)
+            for server, err in errors.items():
+                print(f"[{server}] not connected: {err}")
+            if "zepto" in servers and "zepto" not in errors:
                 adapters["zepto"] = ZeptoAdapter(hub)
+            if "instamart" in servers and "instamart" not in errors:
+                adapters["instamart"] = InstamartAdapter(hub)
+            if "apify" in servers and "apify" not in errors:
+                runner = ApifyRunner(hub, cfg)
+                adapters["blinkit"] = BlinkitAdapter(runner, cfg)
+                adapters["flipkart_minutes"] = FlipkartMinutesAdapter(runner, cfg)
 
         if not a.no_amazon:
             try:
@@ -87,5 +99,7 @@ if __name__ == "__main__":
     p.add_argument("--place", help="where to deliver, e.g. home / college (default: auto-detect)")
     p.add_argument("--budget", type=int, help="budget in rupees (default: it asks; 0 = no limit)")
     p.add_argument("--no-amazon", action="store_true", help="Zepto only")
-    p.add_argument("--no-zepto", action="store_true", help="Amazon Now only")
+    p.add_argument("--no-zepto", action="store_true", help="leave Zepto out")
+    p.add_argument("--no-instamart", action="store_true", help="leave Swiggy Instamart out")
+    p.add_argument("--no-apify", action="store_true", help="leave Blinkit and Flipkart Minutes out (no Apify cost)")
     asyncio.run(main(p.parse_args()))

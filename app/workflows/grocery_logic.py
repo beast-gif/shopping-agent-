@@ -27,7 +27,13 @@ from rapidfuzz import fuzz
 
 from app.schemas import Nutrition, Product
 
-APP_LABEL = {"zepto": "Zepto", "amazon_now": "Amazon Now"}
+APP_LABEL = {"zepto": "Zepto", "amazon_now": "Amazon Now", "instamart": "Instamart",
+             "blinkit": "Blinkit", "flipkart_minutes": "Flipkart Minutes"}
+SHORT_LABEL = {"zepto": "Zepto", "amazon_now": "Amazon", "instamart": "Instamart",
+               "blinkit": "Blinkit", "flipkart_minutes": "Flipkart"}
+# Matching order: apps with nutrition labels first, so groups start from labelled products.
+APP_RANK = {"zepto": 0, "amazon_now": 1, "instamart": 2, "blinkit": 3, "flipkart_minutes": 4}
+COMPARE_ONLY = {"blinkit", "flipkart_minutes"}      # prices only: no cart, no order
 
 # ---------------------------------------------------------------- the plan (filled by the LLM)
 
@@ -122,6 +128,17 @@ def sizes_agree(a: Product, b: Product, tolerance: float) -> Optional[bool]:
 
 def name_score(a: Product, b: Product) -> float:
     return fuzz.token_sort_ratio(clean_name(a.name), clean_name(b.name))
+
+
+def pair_score(a: Product, b: Product, threshold: float, tolerance: float) -> Optional[float]:
+    """Name score if a and b are the same product, else None (rule in the module docstring)."""
+    score = name_score(a, b)
+    if score < threshold:
+        return None
+    size_ok = sizes_agree(a, b, tolerance)
+    if size_ok is False or (size_ok is None and score < 97):
+        return None
+    return score
 
 
 def match_products(left: list[Product], right: list[Product], threshold: float,
@@ -310,23 +327,33 @@ def build_groups(by_app: dict[str, list[Product]], plan: GroceryPlan, threshold:
             claims=any(c.lower() in clean_text_for_claims(p.name) for p in listings.values() for c in plan.claim_words),
         )
 
-    if len(apps) == 2:
-        a, b = apps
-        pairs = match_products(by_app[a], by_app[b], threshold, tolerance)
-        used_a = {i for i, _, _ in pairs}
-        used_b = {j for _, j, _ in pairs}
-        for i, j, score in pairs:
-            groups.append(new_group({a: by_app[a][i], b: by_app[b][j]}, score))
-        for i, p in enumerate(by_app[a]):
-            if i not in used_a:
-                groups.append(new_group({a: p}))
-        for j, p in enumerate(by_app[b]):
-            if j not in used_b:
-                groups.append(new_group({b: p}))
-    else:
-        for app in apps:
-            for p in by_app[app]:
-                groups.append(new_group({app: p}))
+    # N apps: start with the first app's products as groups, then match each next app into
+    # them. A product joins a group only if it is the same product as EVERY listing already in
+    # it (the score is the lowest of those), best pairs first, one listing per app per group.
+    order = sorted(apps, key=lambda a: APP_RANK.get(a, 9))
+    found: list[tuple[dict[str, Product], Optional[float]]] = []
+    for app in order:
+        products = by_app[app]
+        pairs = []
+        for gi, (listings, _) in enumerate(found):
+            for j, p in enumerate(products):
+                scores = [pair_score(q, p, threshold, tolerance) for q in listings.values()]
+                if scores and all(sc is not None for sc in scores):
+                    pairs.append((min(scores), gi, j))
+        pairs.sort(reverse=True)
+        used_g, used_p = set(), set()
+        for score, gi, j in pairs:
+            if gi in used_g or j in used_p:
+                continue
+            listings, old = found[gi]
+            listings[app] = products[j]
+            found[gi] = (listings, score if old is None else min(old, score))
+            used_g.add(gi)
+            used_p.add(j)
+        for j, p in enumerate(products):
+            if j not in used_p:
+                found.append(({app: p}, None))
+    groups = [new_group(listings, score) for listings, score in found]
 
     groups = [g for g in groups if g.cheapest()]                      # drop out-of-stock everywhere
     borrow_labels(groups)
@@ -407,7 +434,7 @@ def groups_view(groups: list[ProductGroup], word: Optional[str], show: int) -> l
 
 
 def groups_table(groups: list[ProductGroup], apps: list[str], health_mode: bool) -> str:
-    head = f"{'#':>3}  {'product':<46} {'size':>8} " + " ".join(f"{APP_LABEL[a]:>10}" for a in apps)
+    head = f"{'#':>3}  {'product':<46} {'size':>8} " + " ".join(f"{SHORT_LABEL.get(a, a):>10}" for a in apps)
     head += f" {'₹/100':>6}"
     if health_mode:
         head += f" {'kcal':>5} {'sugar':>5} {'prot':>5} {'G':>5}  "
@@ -469,7 +496,7 @@ def parse_picks(text: str, count: int, max_qty: int = 10) -> list[tuple[int, int
 def selection_table(picks: list[tuple[ProductGroup, int]], apps: list[str],
                     budget: Optional[int]) -> str:
     """Your picks with each app's item total (listed prices, before fees)."""
-    lines = [f"{'#':>3} {'qty':>4}  {'product':<46} {'size':>8} " + " ".join(f"{APP_LABEL[a]:>10}" for a in apps)]
+    lines = [f"{'#':>3} {'qty':>4}  {'product':<46} {'size':>8} " + " ".join(f"{SHORT_LABEL.get(a, a):>10}" for a in apps)]
     totals = {a: 0.0 for a in apps}
     missing = {a: [] for a in apps}
     for k, (g, qty) in enumerate(picks, 1):
@@ -595,10 +622,18 @@ def quotes_table(quotes: list[dict[str, Any]], budget: Optional[int]) -> str:
     for k, q in enumerate(quotes, 1):
         name = APP_LABEL.get(q["app"], q["app"])
         cart = q.get("cart")
-        if not cart or cart.get("total") is None:
-            lines.append(f"{k:>2}  {name:<11} {'':>8}  {'no bill: ' + (q.get('note') or '?'):<34}")
+        if q.get("listed_only") and cart:
+            lines.append(f"{k:>2}  {name[:11]:<11} {rs(cart.get('item_total')):>8}  {'fees not known (compare-only)':<34}"
+                         f" {'≥ ' + rs(cart.get('item_total')):>8}")
+            for ln in cart.get("lines") or []:
+                lines.append(f"      {ln['quantity']} x {ln['name'][:50]:<50} {rs(ln.get('price')):>8}")
+            if q.get("missing"):
+                notes.append(f"   {name} doesn't have: {', '.join(q['missing'])}")
             continue
-        lines.append(f"{k:>2}  {name:<11} {rs(cart.get('item_total')):>8}  {_fees(cart)[:34]:<34}"
+        if not cart or cart.get("total") is None:
+            lines.append(f"{k:>2}  {name[:11]:<11} {'':>8}  {'no bill: ' + (q.get('note') or '?'):<34}")
+            continue
+        lines.append(f"{k:>2}  {name[:11]:<11} {rs(cart.get('item_total')):>8}  {_fees(cart)[:34]:<34}"
                      f" {rs(cart.get('total')):>8}")
         for ln in cart.get("lines") or []:
             lines.append(f"      {ln['quantity']} x {ln['name'][:50]:<50} {rs(ln.get('price')):>8}")
@@ -656,3 +691,17 @@ def product_cards(groups: list[ProductGroup], apps: list[str], plan: GroceryPlan
     return {"kind": "products", "multi": True, "max_qty": max_qty, "show": show,
             "health": plan.health_mode, "note": note,
             "apps": [{"id": a, "label": APP_LABEL.get(a, a)} for a in apps], "items": items}
+
+
+def listed_tip(quotes: list[dict[str, Any]], best: Optional[int]) -> str:
+    """A compare-only app (Blinkit / Flipkart Minutes) listing your items for less than the best
+    real bill: worth knowing, though its fees aren't known."""
+    best_total = compare_total(quotes[best]) if best is not None else None
+    tips = []
+    for q in quotes:
+        cart = q.get("cart") or {}
+        items = cart.get("item_total")
+        if q.get("listed_only") and items is not None and not q.get("missing"):
+            if best_total is None or items < best_total:
+                tips.append(f"{APP_LABEL.get(q['app'], q['app'])} lists everything for ₹{items:g} before its fees")
+    return ("\nAlso: " + "; ".join(tips) + " (open it in the app to see the real total)") if tips else ""

@@ -23,6 +23,8 @@ from typing import Any, Callable, Optional
 from langgraph.types import Command
 
 from app.adapters.amazon_now import AmazonNowAdapter
+from app.adapters.apify import ApifyRunner, BlinkitAdapter, FlipkartMinutesAdapter
+from app.adapters.instamart import InstamartAdapter
 from app.adapters.swiggy import SwiggyAdapter
 from app.adapters.zepto import ZeptoAdapter
 from app.adapters.zomato import ZomatoAdapter
@@ -52,18 +54,26 @@ class Services:
 
     async def connect(self, stack: AsyncExitStack) -> None:
         hub = await stack.enter_async_context(McpHub(self.cfg))
-        names = [n for n in ("zepto", "swiggy_food", "zomato")
-                 if n in self.cfg.mcp.servers and self.cfg.mcp.servers[n].enabled]
+        names = [n for n in ("zepto", "instamart", "swiggy_food", "zomato", "apify")
+                 if n in self.cfg.mcp.servers and self.cfg.mcp.servers[n].enabled
+                 and (n != "apify" or self.cfg.apify.enabled)]
         self.log("Connecting " + ", ".join(names) + "...")
         errors = await hub.connect_all(names)
         for server, err in errors.items():
             self.log(f"  [{server}] not connected: {err}")
         if "zepto" in names and "zepto" not in errors:
             self.grocery["zepto"] = ZeptoAdapter(hub)
+        if "instamart" in names and "instamart" not in errors:
+            self.grocery["instamart"] = InstamartAdapter(hub)
         if "swiggy_food" in names and "swiggy_food" not in errors:
             self.food["swiggy"] = SwiggyAdapter(hub)
         if "zomato" in names and "zomato" not in errors:
             self.food["zomato"] = ZomatoAdapter(hub)
+        if "apify" in names and "apify" not in errors:
+            # Blinkit + Flipkart Minutes: compare-only, through Apify (paid per result)
+            runner = ApifyRunner(hub, self.cfg, log=lambda text: self.log(text))
+            self.grocery["blinkit"] = BlinkitAdapter(runner, self.cfg)
+            self.grocery["flipkart_minutes"] = FlipkartMinutesAdapter(runner, self.cfg)
         stack.push_async_callback(self.close)
 
     async def ensure_grocery(self) -> None:

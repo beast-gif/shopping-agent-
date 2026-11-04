@@ -20,6 +20,9 @@ mcp:
     zomato:
       url: https://mcp-server.zomato.com/mcp
       enabled: true
+    instamart:                       # Swiggy Instamart (official; same Swiggy account, own login)
+      url: https://mcp.swiggy.com/im
+      enabled: true
     # Blinkit + Flipkart Minutes through Apify scraper Actors (read-only: prices and stock,
     # no cart, no orders). ?tools= limits the server to exactly these tools, so the agent
     # can't start any other (paid) Actor.
@@ -70,6 +73,21 @@ mcp:
       - get_food_cart
       - fetch_food_coupons
       - apply_food_coupon
+    instamart:
+      - get_addresses
+      - search_products
+      - your_go_to_items
+      - update_cart                  # replaces the whole Instamart cart
+      - get_cart
+      - clear_cart
+      - list_coupons
+      - apply_coupon
+    apify:                           # Blinkit + Flipkart Minutes (read-only scrapers)
+      - s-r--blinkit-scraper
+      - clearpath--flipkart-minutes-scraper
+      - get-actor-run
+      - get-dataset-items
+      - abort-actor-run
     zomato:
       - get_saved_addresses_for_user
       - get_restaurants_for_keyword
@@ -96,6 +114,11 @@ ordering:
       - place_food_order
       - check_payment_status
       - confirm_order
+    instamart:
+      - get_payment_options
+      - checkout
+      - check_payment_status
+      - confirm_order
     zomato:
       - checkout_cart
       - get_order_tracking_info
@@ -109,6 +132,15 @@ locations:
   max_gps_accuracy_m: 150      # ignore vaguer fixes (IP-based location is often km off)
   gps_timeout_s: 10
   group_threshold: 0.45        # how similar address texts must be to suggest 'same place'
+
+# Blinkit + Flipkart Minutes via Apify: prices only (no cart, no order). Apify charges per
+# result from your $5/month free credit, so keep max_items small.
+apify:
+  enabled: true                      # false = never call Apify
+  max_items: 10                      # results per app per search (Blinkit's free-plan cap is 10)
+  timeout_s: 90                      # stop waiting for a slow scraper after this
+  usd_per_1000: {blinkit: 5.0, flipkart_minutes: 1.99}   # only for the cost line in the log
+  usd_per_run: 0.005
 
 amazon_now:
   profile_dir: .browser/amazon_brave # its own browser profile: you log in to Amazon here once

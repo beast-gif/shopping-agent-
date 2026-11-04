@@ -77,7 +77,13 @@ from app.workflows.grocery_logic import (
     within_budget,
 )
 
-APP_ORDER = ["zepto", "amazon_now", "blinkit", "flipkart_minutes"]
+APP_ORDER = ["zepto", "amazon_now", "instamart", "blinkit", "flipkart_minutes"]
+
+
+def address_id(addresses: dict, app: str):
+    """Instamart uses the same Swiggy account (and saved addresses) as Swiggy Food, so places
+    set up before Instamart existed fall back to their Swiggy address."""
+    return addresses.get(app) or (addresses.get("swiggy") if app == "instamart" else None)
 CANCEL = {"cancel", "q", "quit", "exit", "stop"}
 
 
@@ -126,7 +132,7 @@ def build_grocery_graph(cfg: AppConfig, adapters: dict[str, GroceryAdapter],
                 return True                                   # checked against its own address later
             if a in COMPARE_ONLY:
                 return place.lat is not None and place.lng is not None   # searched by coordinates
-            return bool(place.address_for(a))
+            return bool(address_id(place.addresses, a))
         apps = [a for a in APP_ORDER if a in adapters and usable(a)]
         remember_place(place)
         log(f"Delivering to {place.name} ({how}).")
@@ -283,6 +289,10 @@ def build_grocery_graph(cfg: AppConfig, adapters: dict[str, GroceryAdapter],
             # Apify: you pay per result, so only your main search term, max_items results
             for p in await adapters[app].search(terms[0]):
                 found.setdefault(p.product_id, p)
+        elif app == "instamart":
+            for term in terms:                                   # free (official MCP): every term
+                for p in await adapters["instamart"].search(term):
+                    found.setdefault(p.product_id, p)
         elif app == "zepto":
             sections = await adapters["zepto"].search_many(terms)
             ordered = [sections.get(t, []) for t in terms] + [ps for t, ps in sections.items() if t not in terms]
@@ -340,6 +350,9 @@ def build_grocery_graph(cfg: AppConfig, adapters: dict[str, GroceryAdapter],
                 except Exception as e:  # noqa: BLE001
                     log(f"  Zepto left out: {describe_error(e)}")
             elif app == "amazon_now" and await amazon_ready(place):
+                ready.append(app)
+            elif app == "instamart":
+                await adapters["instamart"].set_address(address_id(place["addresses"], "instamart"))
                 ready.append(app)
             elif app in COMPARE_ONLY:
                 if place.get("lat") is None or place.get("lng") is None:
@@ -484,6 +497,8 @@ def build_grocery_graph(cfg: AppConfig, adapters: dict[str, GroceryAdapter],
             except Exception as e:  # noqa: BLE001
                 log(f"  Zepto left out: {describe_error(e)}")
                 apps.remove("zepto")
+        if "instamart" in apps:                              # same reason: a resumed chat has a fresh session
+            await adapters["instamart"].set_address(address_id(state["place"]["addresses"], "instamart"))
         if not apps:
             return {"quotes": [], "after": "end", "route": "cleanup"}
         carts = [a for a in apps if a not in COMPARE_ONLY]

@@ -72,6 +72,14 @@ def _upi_only_swiggy(a: dict) -> Optional[str]:
     return None
 
 
+def _upi_only_instamart(a: dict) -> Optional[str]:
+    if str(a.get("paymentMethod", "")).strip().upper() != "UPI":
+        return "Instamart orders must use paymentMethod='UPI' (no cash on delivery, no Swiggy Money)"
+    if a.get("confirmDuplicate"):
+        return "confirmDuplicate is never set automatically"
+    return None
+
+
 def _zepto_online(a: dict) -> Optional[str]:
     if a.get("useZeptoCash"):
         return "Zepto Cash (wallet) payments are not allowed"
@@ -99,6 +107,10 @@ ORDER_RULES: dict[tuple[str, str], tuple[Any, Any]] = {
     ("swiggy_food", "place_food_order"): (lambda a: True, _upi_only_swiggy),
     ("swiggy_food", "check_payment_status"): (_never, lambda a: "finalize is widget-only" if a.get("finalize") else None),
     ("swiggy_food", "confirm_order"): (_never, None),
+    ("instamart", "get_payment_options"): (_never, None),
+    ("instamart", "checkout"): (lambda a: True, _upi_only_instamart),
+    ("instamart", "check_payment_status"): (_never, None),
+    ("instamart", "confirm_order"): (_never, None),
     ("zomato", "checkout_cart"): (lambda a: True, _zomato_upi),
     ("zomato", "get_order_tracking_info"): (_never, None),
 }

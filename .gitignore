@@ -1,23 +1,28 @@
 # ---- secrets and logins (never commit) ----
-# Velona API key
+# Velona API key, Apify token
 .env
-# OAuth tokens for Zepto / Swiggy / Zomato: anyone with these can use your accounts
+.env.*
+!.env.example
+# OAuth tokens for Zepto / Swiggy Food / Instamart / Zomato: anyone with these can use your accounts
 .tokens/
-# Amazon Now logged-in browser profile (Phase 3)
+# Amazon Now logged-in browser profile (Brave/Chrome)
 .browser/
 
 # ---- local state ----
 # Zepto device id, payment QR images
 .state/
-# LangGraph SQLite checkpoints (Phase 6)
+# LangGraph SQLite checkpoints (your conversations)
 .checkpoints/
 *.sqlite
 *.sqlite3
+*.sqlite-*
+*.db
 
 # ---- your real data from test runs ----
-# raw app responses: contain your addresses, carts and order ids
+# raw app responses: contain your addresses, carts, order ids, Apify run data
 probes/
 tools_dump.json
+*.log
 # your saved places: addresses, Wi-Fi names, coordinates
 places.yaml
 

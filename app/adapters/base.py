@@ -206,16 +206,20 @@ _UNIT_MAP = {
 
 
 def parse_pack_size(text: Optional[str]) -> tuple[Optional[float], Optional[str]]:
-    """'1 pc (120 ml)' -> (120, 'ml');  '2 x 500 ml' -> (1000, 'ml');  '1kg' -> (1000, 'g');
-    '6 pcs' -> (6, 'pcs');  None -> (None, None)"""
+    """'1 pc (120 ml)' -> (120, 'ml');  '2 x 500 ml' -> (1000, 'ml');  '125 ml x 5' -> (625, 'ml');
+    '1kg' -> (1000, 'g');  '6 pcs' -> (6, 'pcs');  None -> (None, None)"""
     if not text:
         return None, None
     s = text.lower().replace("×", "x")
 
-    multi = re.search(r"(\d+)\s*x\s*(\d+(?:\.\d+)?)\s*" + _UNIT + r"\b", s)
+    multi = re.search(r"(\d+)\s*x\s*(\d+(?:\.\d+)?)\s*" + _UNIT + r"\b", s)          # '5 x 125 ml'
     if multi:
         unit, factor = _UNIT_MAP[multi.group(3)]
         return round(int(multi.group(1)) * float(multi.group(2)) * factor, 2), unit
+    multi = re.search(r"(\d+(?:\.\d+)?)\s*" + _UNIT + r"\s*x\s*(\d+)\b", s)          # '125 ml x 5' (Instamart)
+    if multi:
+        unit, factor = _UNIT_MAP[multi.group(2)]
+        return round(float(multi.group(1)) * int(multi.group(3)) * factor, 2), unit
 
     amounts = re.findall(r"(\d+(?:\.\d+)?)\s*" + _UNIT + r"\b", s)
     if amounts:

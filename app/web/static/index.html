@@ -47,7 +47,8 @@
   .logs { font: 12.5px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace; color: var(--muted);
           white-space: pre-wrap; padding: 0 4px; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
-  .card.done { border-left: 4px solid var(--ok); white-space: pre-wrap; }
+  .card.done { border-left: 4px solid var(--ok); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .card.done a { color: var(--accent); }
   .card.error { border-left: 4px solid var(--warn); color: var(--warn); }
   pre.table { margin: 0; background: var(--mono-bg); border-radius: 8px; padding: 10px 12px;
               font: 12.5px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;
@@ -171,6 +172,16 @@ function el(tag, cls, text) {
   if (cls) e.className = cls;
   if (text !== undefined && text !== null) e.textContent = text;
   return e;
+}
+/* Text with https:// links made clickable (e.g. Blinkit / Flipkart product links). */
+function linkify(node, text) {
+  (text || "").split(/(https?:\/\/[^\s]+)/g).forEach((part, i) => {
+    if (i % 2) {
+      const a = el("a", "", part); a.href = part; a.target = "_blank"; a.rel = "noopener noreferrer";
+      node.append(a);
+    } else node.append(part);
+  });
+  return node;
 }
 function stick() { if (!replaying) scroller.scrollTop = scroller.scrollHeight; }
 
@@ -427,7 +438,7 @@ function render(ev) {
     }
     case "done":
       freezeQuestions();
-      feed.append(el("div", "card done", ev.text));
+      feed.append(linkify(el("div", "card done"), ev.text));
       waiting = false; hint.textContent = "";
       break;
     case "error":
