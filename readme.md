@@ -9,20 +9,24 @@ fills the cart, and leaves only the payment to you.
 - **Restaurant by name:** "meghana foods" goes straight to its menu.
 - **Coupons and offers:** Zomato applies its best offer by itself; for Swiggy, type a code from your
   Swiggy app (`coupon SWIGGYIT`) and the bill is refreshed with Swiggy's real total.
-- **Groceries:** "guilt free ice cream under 200" searches **Zepto and Amazon Now**, reads
-  nutrition labels, matches the same product across both apps, ranks by a health score, and
-  compares the real bills. You can fill a **basket** (ice cream, chips, curd) and get one bill
-  per app.
-- **Web page with cards:** product, dish and restaurant cards with photos, both apps' prices, the
+- **Groceries on five apps:** "guilt free ice cream under 200" searches **Zepto, Amazon Now,
+  Swiggy Instamart, Blinkit and Flipkart Minutes** at the same time, reads nutrition labels, matches
+  the same product across all of them, ranks by a health score, and compares the real bills. You can
+  fill a **basket** (ice cream, chips, curd) and get one bill per app. Zepto, Amazon Now and Instamart
+  get real carts and bills; Blinkit and Flipkart Minutes are compare-only (listed prices plus a link
+  to buy in their app).
+- **Web page with cards:** product, dish and restaurant cards with photos, every app's price, the
   nutrition label and +/− quantity buttons, served from your laptop.
 - **Location aware:** delivers to the right saved address (home, college ...) from Wi-Fi/GPS, or
   you tap the place.
 - **Payment stays with you:** nothing is ordered unless you type the exact `confirm <total>` and pay
-  the UPI QR yourself (Zepto / Swiggy / Zomato), or press *Proceed to pay* yourself (Amazon Now).
+  the UPI QR yourself (Zepto / Instamart / Swiggy / Zomato), or press *Proceed to pay* yourself
+  (Amazon Now).
 
 Built with **LangGraph** (agent workflows with human-in-the-loop), the apps' official **MCP servers**
-(Zepto, Swiggy, Zomato), **Playwright** (Amazon Now through your own logged-in browser), and an
-OpenAI-compatible LLM (**Velona**).
+(Zepto, Swiggy Food, Swiggy Instamart, Zomato), **Apify's MCP server** (Blinkit and Flipkart Minutes
+scrapers), **Playwright** (Amazon Now through your own logged-in browser), and an OpenAI-compatible
+LLM (**Velona**).
 
 ---
 
@@ -30,6 +34,7 @@ OpenAI-compatible LLM (**Velona**).
 
 - [How a request looks](#how-a-request-looks)
 - [Architecture](#architecture)
+- [Grocery apps](#grocery-apps)
 - [How it decides](#how-it-decides)
 - [Safety](#safety)
 - [Setup](#setup)
@@ -49,20 +54,22 @@ An illustrative session (prices and fees vary):
 ```
 You: guilt free ice cream, masala kaju under 300
   → Where should it be delivered?            [home] [clg] [work] ...
-  → Searching Zepto and Amazon Now...
+  → Searching Zepto, Amazon Now, Instamart, Blinkit, Flipkart Minutes...
       Zepto: 15 products, 14 look like ice cream · nutrition labels: read 14, 10 had numbers
-  →  #  product                              size   Zepto  Amazon Now  ₹/100  kcal sugar prot    G
-      1  Get-A-Way Chocolate Brownie Fudge   100 ml  ₹90      ₹60*      60    111   2.4  7.0  0.59 ✓
-      4  Go Zero Belgian Dark Chocolate       100 ml  ₹53      ₹53       53     97   3.0  2.7  0.47 ✓
+      Blinkit: 10 rows in 46 s · Flipkart Minutes: 11 rows in 11 s · Apify so far: about $0.09
+  →  #  product                             size   Zepto Amazon Instamart Blinkit Flipkart  ₹/100 kcal sugar   G
+      1  Get-A-Way Chocolate Brownie Fudge  100 ml   ₹78   ₹60*        —       —        —     60   111  2.4 0.59 ✓
+      4  Go Zero Belgian Dark Chocolate     100 ml   ₹94   ₹53*      ₹58     ₹95      ₹73     53    97  3.0 0.47 ✓
      > 4x2
   → (masala kaju list) > 3
   → Your basket ... [bill]
   → Real bills from each app:
-      1  Zepto         items ₹113  delivery ₹30, other ₹5   TO PAY ₹148
-      2  Amazon Now    items ₹166  handling ₹0, delivery ₹0 TO PAY ₹166
-     Cheapest with everything: 1. Zepto at ₹148
-  → Type 'confirm 148' to place a UPI order
-  → (UPI QR shown) payment: PAID → "Paid. Zepto order is placed."
+      1  Zepto         items ₹268  delivery ₹30, other ₹5           TO PAY ₹303
+      2  Amazon Now    items ₹186  handling ₹0, delivery ₹0         TO PAY ₹186
+      3  Instamart     items ₹196  handling ₹12, delivery partner …  TO PAY ₹244
+      4  Blinkit       items ₹270  fees not known (compare-only)    ≥ ₹270
+     Cheapest with everything: 2. Amazon Now at ₹186
+  → Type 'open' → your Amazon cart opens in Brave → you press Proceed to pay
 ```
 
 ---
@@ -75,10 +82,11 @@ You: guilt free ice cream, masala kaju under 300
  Terminal (chat.py) ────────────────┘      │            │
                                            │        router (LLM: grocery / food / unknown)
                                            │        ├── food subgraph     (Swiggy ∥ Zomato)
-                                           │        └── grocery subgraph  (Zepto ∥ Amazon Now)
+                                           │        └── grocery subgraph  (Zepto ∥ Amazon ∥ Instamart ∥ Blinkit ∥ Flipkart)
                                            │                 │
                           SQLite checkpointer          Adapters
-                         (.checkpoints/shop.sqlite)    ├── MCP: Zepto, Swiggy, Zomato (OAuth 2.1 + PKCE)
+                         (.checkpoints/shop.sqlite)    ├── MCP (OAuth 2.1 + PKCE): Zepto, Swiggy Food, Instamart, Zomato
+                                                       ├── MCP (API token): Apify → Blinkit, Flipkart Minutes scrapers
                                                        └── Browser: Amazon Now (Brave via Playwright)
 ```
 
@@ -108,10 +116,49 @@ The server pushes events as they happen: `log` (live progress), `question` (prom
 the unfinished request again.
 
 **Cards.** List questions also carry a `cards` block: products, dishes or restaurants, with photo
-links, both apps' prices, labels and G. The page draws cards with +/− buttons and turns your taps back
+links, every app's price, labels and G. The page draws cards with +/− buttons and turns your taps back
 into the same text the terminal uses (`#4 × 2, #7 × 1` → `"4x2, 7"`), so the graph reads picks in
-one way only. Photos load straight from the apps' image servers (Swiggy, Zomato, Zepto, Amazon). The
-agent passes along only the links the apps send.
+one way only. Photos load straight from the apps' image servers. The agent passes along only the
+links the apps send.
+
+---
+
+## Grocery apps
+
+| App | Connected through | Search | Cart + real bill | Order | Cost |
+|---|---|---|---|---|---|
+| **Zepto** | official MCP (`mcp.zepto.co.in`) | ✓ + nutrition labels | ✓ (agent's own cart) | ✓ UPI after `confirm` | free |
+| **Amazon Now** | your logged-in Brave (`/tez/` JSON endpoints) | ✓ | ✓ (your real cart: other items set aside and put back) | you press *Proceed to pay* | free |
+| **Swiggy Instamart** | official MCP (`mcp.swiggy.com/im`) | ✓ (each pack size is a row) | ✓ (agent's own cart) | ✓ UPI after `confirm` | free |
+| **Blinkit** | Apify scraper `s-r/blinkit-scraper` | ✓ (main search term, 10 results) | ✗ compare-only | links to open in the app | Apify credit |
+| **Flipkart Minutes** | Apify scraper `clearpath/flipkart-minutes-scraper` | ✓ (main search term, 10 results) | ✗ compare-only | links to open in the app | Apify credit |
+
+**How an Apify search runs.** Calling an Actor returns the *run*, not the products, so it takes three calls:
+```
+① s-r--blinkit-scraper({queries, locations: [{lat, lon}], max_items: 10, waitSecs: 45})
+     → {runId, status: "RUNNING", datasets.default: {id, itemCount: 10}}
+② while not finished AND itemCount < 10 AND under 90 s:  get-actor-run(runId, waitSecs: 30)
+③ get-dataset-items(datasetId) → the product rows
+```
+Rows are read as soon as there are enough (Blinkit often has its 10 rows while still "RUNNING"). A run with
+no rows after 90 s is aborted. Location is your place's coordinates (from its Zepto address).
+
+**Apify cost.** Apify's free plan gives $5 of credit a month. Per search, roughly:
+```
+Flipkart Minutes:  ~11 rows × $1.99 / 1000 + $0.005 per run ≈ $0.027
+Blinkit:           ~11 rows × $5.00 / 1000 + $0.005 per run ≈ $0.060
+                                                        total ≈ $0.09  →  ~55 searches a month
+```
+The log shows a running estimate (`Apify so far this session: about $…`). `apify.enabled: false` or
+`--no-apify` leaves both out.
+
+**Instamart bill (real example).** `get_cart` returns label/value lines:
+```
+Item Total ₹19.00 · Handling Fee ₹12.00 · Small Cart Fee ₹23.60 · Delivery Partner Fee ₹35.70 · To Pay ₹90
+```
+These become `items ₹19 | handling ₹12, small cart ₹23.6, delivery partner ₹35.7 | TO PAY ₹90` (the ₹0.30
+rounding stays under the ₹0.50 "other" threshold). Small baskets pay large fees, which is why the agent
+compares real bills, not listed prices.
 
 ---
 
@@ -149,12 +196,14 @@ R = 0.5 · rating/5 + 0.3 · (1 − ETA/ETA_max) + 0.2 · dish_match        (dis
 limits per 100 g/ml, realistic for the category. A limit that no labelled product meets is dropped
 automatically, for example "≤ 150 kcal" for chocolate.
 
-**Same product on both apps.**
+**Same product on several apps.**
 1. Clean the names: lower case; remove sizes, marketing ("guilt free", "zero added sugar") and packaging
    ("cup", "tub"). "Get- A-Way" becomes "getaway".
 2. `token_sort_ratio(clean_a, clean_b) ≥ 90`.
-3. Sizes agree: `|a − b| / max(a, b) ≤ 5%`.
-4. Best-first, one-to-one assignment.
+3. Sizes agree: `|a − b| / max(a, b) ≤ 5%`. Multipacks count in full: "125 ml x 5" and "5 x 125 ml" are 625 ml.
+4. Apps are added one at a time (Zepto → Amazon → Instamart → Blinkit → Flipkart). A product joins a group
+   only if it matches **every** listing already in it; the group's score is the lowest of those. Best pairs
+   first, one listing per app per group.
 
 Example: Zepto "Go Zero Belgian Dark Chocolate Guilt Free Ice Cream Cup 100 ml" and Amazon
 "Go Zero Belgian Dark Chocolate Ice Cream 100 ml" both clean to `go zero belgian dark chocolate ice cream`
@@ -182,10 +231,12 @@ similarity: IDF-weighted shared words, symmetric coverage, × 0.6 for a pincode 
 
 ### Bills
 
-The listed price isn't what you pay, so the agent fills **both** carts and reads each app's own bill
-(Zepto: payment preview; Amazon: the bill its cart page fetches; Swiggy/Zomato: their cart pricing).
-Unnamed amounts show as `other = TO PAY − items − named fees`, so every bill adds up. The suggestion is
-the cheapest app that has **all** your items.
+The listed price isn't what you pay, so the agent fills the carts and reads each app's own bill
+(Zepto: payment preview; Amazon: the bill its cart page fetches; Instamart: `billBreakdown`;
+Swiggy/Zomato: their cart pricing). Unnamed amounts show as `other = TO PAY − items − named fees`, so every
+bill adds up. The suggestion is the cheapest app with a real bill that has **all** your items. Blinkit and
+Flipkart Minutes show `≥ items total` (fees unknown); if one lists everything for less than the best real
+bill, an "Also:" line says so. Choosing one gives you the product links to buy there.
 
 ---
 
@@ -197,18 +248,25 @@ the cheapest app that has **all** your items.
 - **Typed approval:** `confirm <total rounded up>` is a single-use token bound to one app and amount,
   valid for 5 minutes, max ₹1500 (`ordering.max_order_total`). There's no button for it, on purpose.
 - **Bill check:** if the app asks for more than you approved, the agent stops and tells you not to pay.
-- **Unpaid orders lapse** after 5 minutes (Swiggy's `confirm_order` closes them as failed).
+- **Unpaid orders lapse** after 5 minutes (Swiggy Food's `confirm_order` closes them as failed; Instamart's
+  `confirm_order` is only ever called after a successful payment, as Swiggy's docs require).
+- **Instamart:** `checkout` is blocked for normal calls; through `call_order` it must be
+  `paymentMethod: "UPI"` (no cash, no Swiggy Money), and `confirmDuplicate` is never set.
+- **Apify:** the server address limits it to the two scrapers (`?tools=…`), and the allowlist lets the
+  agent call only those plus `get-actor-run`, `get-dataset-items` and `abort-actor-run`. No other paid
+  Actor can be started.
 - **Amazon Now:** the agent can call only 8 read/cart endpoints (no checkout). You press *Proceed to pay*
   yourself. Other items in your real cart are only set aside while comparing and put back afterwards.
 - **The web page listens on 127.0.0.1 only.**
-- Secrets live in `.env` and `.tokens/`, and the Amazon login in `.browser/`. All are git-ignored.
+- Secrets live in `.env` (Velona key, Apify token) and `.tokens/`, and the Amazon login in `.browser/`.
+  All are git-ignored.
 
 ---
 
 ## Setup
 
 **Needs:** Windows 10/11, Python 3.13, Brave (or Chrome), Swiggy / Zomato / Zepto / Amazon accounts,
-and a Velona API key.
+a Velona API key, and (for Blinkit / Flipkart Minutes) a free Apify account.
 
 ```powershell
 cd C:\Users\amrit\Desktop\shopping_agents
@@ -222,6 +280,7 @@ pip install -r requirements.txt
 VELONA_BASE_URL=https://velona.in/v1
 VELONA_API_KEY=...
 VELONA_MODEL=openai/gpt-4o-mini
+APIFY_TOKEN=apify_api_...        # Apify Console → Settings → API & Integrations
 ```
 Check it with `python scripts\check_velona.py`.
 
@@ -229,7 +288,9 @@ Check it with `python scripts\check_velona.py`.
 ```powershell
 python scripts\list_tools.py
 ```
-A browser opens for each app (Zepto, Swiggy, Zomato). Log in, and the tool list is written to `tools_dump.json`.
+A browser opens for each app (Zepto, Swiggy Food, Instamart, Zomato). Log in, and the tool list is written to
+`tools_dump.json`. Apify uses the token from `.env` (no browser). Instamart uses the same Swiggy account and
+saved addresses as Swiggy Food, with its own login token.
 
 **3. Log in to Amazon** in the agent's own browser profile (once):
 ```powershell
@@ -280,7 +341,10 @@ no button, on purpose.
 ```powershell
 python scripts\try_food.py biryani
 python scripts\try_grocery.py "guilt free ice cream, dark chocolate"     # quote commas in PowerShell
+python scripts\try_grocery.py curd --no-apify --no-instamart   # leave apps out
 python scripts\try_amazon.py ice cream --cart
+python scripts\probe_apify.py         # Blinkit + Flipkart Minutes: tools, one small search each
+python scripts\probe_instamart.py     # Instamart: tools, addresses, a search, the cart (--cart-test)
 python scripts\try_adapters.py
 python scripts\probe.py               # raw MCP responses into probes/
 ```
@@ -297,6 +361,8 @@ shopping_agents/
 │  │  ├─ zepto.py           MCP: addresses, search, labels, cart, UPI order
 │  │  ├─ swiggy.py          MCP: restaurants, menu, cart, coupons, UPI order
 │  │  ├─ zomato.py          MCP: restaurants, menu, cart, UPI checkout
+│  │  ├─ instamart.py       MCP: search (per pack size), cart, bill, UPI order
+│  │  ├─ apify.py           Apify runner + Blinkit, Flipkart Minutes (compare-only)
 │  │  └─ amazon_now.py      browser: search, product, cart (atc), bill, set aside / put back
 │  ├─ workflows/
 │  │  ├─ main.py            router → food / grocery subgraphs
@@ -339,6 +405,11 @@ Everything is in `config.yaml`. The parts you're most likely to change:
 | `locations.match_radius_m` | `300` | a GPS fix must be this close to a place |
 | `amazon_now.channel` | `brave` | `brave`, `chrome` or `chromium` |
 | `amazon_now.executable_path` | `""` | path to brave.exe if it isn't found automatically |
+| `apify.enabled` | `true` | `false` = never call Apify (no Blinkit / Flipkart Minutes) |
+| `apify.max_items` | `10` | results per app per search (Blinkit's free cap is 10); more = more matches, more cost |
+| `apify.timeout_s` | `90` | stop waiting for a slow scraper |
+| `apify.usd_per_1000` | `blinkit 5.0, flipkart_minutes 1.99` | only for the cost estimate in the log |
+| `mcp.servers.<app>.enabled` | `true` | turn one app off (e.g. `instamart`) |
 
 ---
 
@@ -348,12 +419,12 @@ All git-ignored.
 
 | Path | What |
 |---|---|
-| `.tokens/` | MCP OAuth tokens (Zepto, Swiggy, Zomato) |
+| `.tokens/` | MCP OAuth tokens (Zepto, Swiggy Food, Instamart, Zomato) |
 | `.browser/amazon_brave/` | the agent's browser profile (Amazon login) |
 | `places.yaml` | your places ↔ each app's address IDs, plus Wi-Fi names |
 | `.checkpoints/shop.sqlite` | LangGraph checkpoints (conversations) |
 | `.state/` | Zepto device ID, last place, unfinished request, UPI QR images |
-| `probes/` | raw app responses saved for debugging (bills, coupons, Amazon recon) |
+| `probes/` | raw app responses saved for debugging (bills, coupons, Amazon recon, Apify rows, Instamart carts) |
 
 ---
 
@@ -370,6 +441,11 @@ All git-ignored.
 | Swiggy says "no coupons for this cart" | Swiggy's MCP lists only COD coupons: type `coupon CODE` from your Swiggy app at the bills |
 | A restaurant shows one app but is on both | tap it: the agent looks it up on the other app by name and says "Also on Zomato: …" |
 | A bill shows "other ₹X" | an unnamed fee; send `probes/grocery_quotes.json` / `probes/last_quotes.json` to name it |
+| Apify: "no token" / not connected | put `APIFY_TOKEN=...` in `.env` |
+| Blinkit takes ~45 s | normal: its scraper is slow; the search waits for the slowest app (`--no-apify` to skip) |
+| Apify credit ran out | Apify blocks runs until next month; set `apify.enabled: false` meanwhile |
+| Instamart: "The store is unavailable at the moment" | from `get_cart` before a cart exists; the agent uses the cart `update_cart` returned instead |
+| The page shows Python code instead of the chat | `app\web\static\index.html` was overwritten: copy the real `index.html` back (it starts with `<!doctype html>`) and press Ctrl+F5 |
 | The page says "offline" | the server stopped: run `python scripts\web.py` again (the unfinished request is offered) |
 
 ---
@@ -380,9 +456,11 @@ All git-ignored.
 - Switching Amazon Now's delivery address (it's used only when its pincode matches your place).
 - Dishes with size or add-on choices.
 - Finding Swiggy coupon codes by itself (Swiggy's MCP lists only COD coupons; typed codes work).
+- Carts and orders on Blinkit and Flipkart Minutes (Apify scrapers are read-only: compare + links).
+- Nutrition labels from Amazon, Instamart, Blinkit or Flipkart (matched products use Zepto's label).
 
 **Not yet run against the real apps**
-- Zepto UPI order.
+- Zepto and Instamart UPI orders.
 - Amazon's new-order detection.
 - Putting set-aside Amazon items back.
 - Typed Swiggy coupons that are UPI-only (whether `apply_food_coupon` accepts them).
@@ -395,5 +473,6 @@ All git-ignored.
 
 ---
 
-*Personal project. It uses the apps' official MCP servers where they exist, and your own logged-in
-browser for Amazon Now. Use it on your own accounts, responsibly.*
+*Personal project. It uses the apps' official MCP servers where they exist, your own logged-in browser
+for Amazon Now, and third-party Apify scrapers (read-only) for Blinkit and Flipkart Minutes. Use it on your
+own accounts, responsibly.*
